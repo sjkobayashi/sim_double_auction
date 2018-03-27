@@ -1,10 +1,24 @@
 import random
 import math
 import numpy as np
+import matplotlib.pyplot as plt
 from mesa import Agent, Model
 from mesa.time import RandomActivation
 from mesa.datacollection import DataCollector
 
+
+def get_bidder_id(model):
+    try:
+        return model.outstanding_bidder.unique_id
+    except AttributeError:
+        return -1
+
+
+def get_asker_id(model):
+    try:
+        return model.outstanding_asker.unique_id
+    except AttributeError:
+        return -1
 
 class ZeroIntelligence(Agent):
     """Zero-Intelligence strategy from Gode and Sunder (1993)"""
@@ -70,18 +84,6 @@ class CDAmodel(Model):
             )
 
         # Collecting data
-        def get_bidder_id(model):
-            try:
-                return model.outstanding_bidder.unique_id
-            except AttributeError:
-                return -1
-
-        def get_asker_id(model):
-            try:
-                return model.outstanding_asker.unique_id
-            except AttributeError:
-                return -1
-
         self.datacollector = DataCollector(
             model_reporters={"Period": "period",
                              "Tick": "tick",
@@ -141,8 +143,31 @@ class CDAmodel(Model):
         self.tick = 1
 
 
-demand = np.linspace(50, 150, 6)
-supply = np.linspace(150, 50, 6)
+class Supply:
+    def __init__(self, N, q, p_min, p_max, steps):
+        if N % steps != 0:
+            raise ValueError("Number of agents must be divisible by number of steps")
+
+        self.num_agents = N  # number of buyers
+        self.quantity_per_agent = q  # number of units held by each buyer
+
+        num_per_step = self.num_agents // steps
+        prices = np.linspace(p_min, p_max, steps)
+        self.price_schedule = np.array(
+            [p for p in prices for i in range(num_per_step)]
+        )
+        self.quantity_supplied = np.cumsum(
+            np.repeat(self.quantity_per_agent, self.num_agents)
+        )
+
+    def graph(self):
+        plt.step(np.append(0, self.quantity_supplied),
+                 np.append(0, self.price_schedule))
+        plt.show()
+
+
+demand = np.linspace(150, 50, 6)
+supply = np.linspace(50, 150, 6)
 
 model = CDAmodel(demand, supply)
 for i in range(100):
