@@ -20,6 +20,10 @@ def get_asker_id(model):
     except AttributeError:
         return -1
 
+def compute_efficiency(model):
+    agent_surpluses = np.array([agent.surplus for agent in model.schedule.agents])
+
+
 class ZeroIntelligence(Agent):
     """Zero-Intelligence strategy from Gode and Sunder (1993)"""
     def __init__(self, unique_id, model, role, value):
@@ -109,6 +113,7 @@ class CDAmodel(Model):
         self.outstanding_ask = math.inf
         self.outstanding_asker = None
         self.traded = 0
+        self.market_price = None
 
     def update_ob(self, bidder, price):
         if price > self.outstanding_bid:
@@ -162,13 +167,61 @@ class Supply:
 
     def graph(self):
         plt.step(np.append(0, self.quantity_supplied),
-                 np.append(0, self.price_schedule))
+                 np.append(self.price_schedule[0], self.price_schedule))
+        plt.show()
+
+    def market_graph(self, other):
+        plt.step(np.append(0, self.quantity_supplied),
+                 np.append(self.price_schedule[0], self.price_schedule))
+        plt.step(np.append(0, other.quantity_supplied),
+                 np.append(other.price_schedule[0], other.price_schedule))
         plt.show()
 
 
-demand = np.linspace(150, 50, 6)
-supply = np.linspace(50, 150, 6)
+class Demand(Supply):
+    def __init__(self, N, q, p_min, p_max, steps):
+        super().__init__(N, q, p_min, p_max, steps)
+        self.price_schedule = np.flip(self.price_schedule, 0)
 
-model = CDAmodel(demand, supply)
+
+class Supply2(Supply):
+    def __init__(self, num_in, num_ex, q, p_min, p_eqb, num_per_step):
+        if num_in % num_per_step != 0:
+            raise ValueError("Number of intramarginal agents \
+            must be divisible by number of agents per step")
+        if num_ex % num_per_step != 0:
+            raise ValueError("Number of extramarginal agents \
+            must be divisible by number of agents per step")
+
+        self.num_agents = num_in + num_ex  # number of buyers
+        self.quantity_per_agent = q  # number of units held by each buyer
+
+        steps_in = num_in // num_per_step
+        prices_in = np.linspace(p_min, p_eqb, steps_in)
+        delta = (p_eqb - p_min) / (steps_in - 1)
+        steps_ex = num_ex // num_per_step
+        prices_out = np.array(
+            [p_eqb + i * delta for i in range(1, steps_ex + 1)]
+        )
+        prices = np.append(prices_in, prices_out)
+        self.price_schedule = np.array(
+            [p for p in prices for i in range(num_per_step)]
+        )
+        self.quantity_supplied = np.cumsum(
+            np.repeat(self.quantity_per_agent, self.num_agents)
+        )
+
+
+# equilibrium price is 110
+# equilibrium quantity is 24
+demand = Demand(14, 3, 50, 170, 7)
+supply = Supply(14, 3, 50, 170, 7)
+
+model = CDAmodel(demand.price_schedule, supply.price_schedule)
 for i in range(100):
     model.step()
+
+data_model = model.datacollector.get_model_vars_dataframe()
+data_model = data_model[data_model.Traded == 1]
+
+data_agent = model.datacollector.get_agent_vars_dataframe()
