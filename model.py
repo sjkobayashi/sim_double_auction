@@ -20,20 +20,27 @@ def get_asker_id(model):
     except AttributeError:
         return -1
 
+
 def compute_efficiency(model):
-    agent_surpluses = np.array([agent.surplus for agent in model.schedule.agents])
+    producer_surplus = model.supply.theoretical_surplus
+    consumer_surplus = model.demand.theoretical_surplus
+    total_surplus = producer_surplus + consumer_surplus
+    actual_surplus = np.sum(np.fromiter(
+        (agent.surplus for agent in model.schedule.agents), float
+    ))
+    return actual_surplus / total_surplus
 
 
 class ZeroIntelligence(Agent):
     """Zero-Intelligence strategy from Gode and Sunder (1993)"""
-    def __init__(self, unique_id, model, role, value):
+    def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model)
         self.role = role  # buyer or seller
         self.value = value  # value or cost
 
         self.surplus = 0  # profit
-        self.right = 5  # right to buy
-        self.good = 5  # good owned
+        self.right = q  # right to buy
+        self.good = q  # good owned
 
     def bid(self, price):
         # Submit a bid to the CDA.
@@ -68,23 +75,27 @@ class ZeroIntelligence(Agent):
 
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
-    def __init__(self, demand, supply):
+    def __init__(self, supply, demand):
         self.period = 1
         self.tick = 1
-        self.num_buyers = len(demand)
-        self.num_sellers = len(supply)
+        self.supply = supply
+        self.demand = demand
+        self.num_buyers = demand.num_agents
+        self.num_sellers = supply.num_agents
         self.initialize_spread()
         self.market_price = None
         # How agents are activated at each step
         self.schedule = RandomActivation(self)
         # Create agents
-        for i, value in enumerate(demand):
+        for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                ZeroIntelligence(i, self, "buyer", value)
+                ZeroIntelligence(i, self, "buyer", value, demand.q_per_agent)
             )
-        for i, cost in enumerate(supply):
+        for i, cost in enumerate(supply.price_schedule):
             self.schedule.add(
-                ZeroIntelligence(self.num_buyers + i, self, "seller", cost)
+                ZeroIntelligence(
+                    self.num_buyers + i, self, "seller", cost, supply.q_per_agent
+                )
             )
 
         # Collecting data
@@ -149,43 +160,21 @@ class CDAmodel(Model):
 
 
 class Supply:
-    def __init__(self, N, q, p_min, p_max, steps):
-        if N % steps != 0:
-            raise ValueError("Number of agents must be divisible by number of steps")
-
-        self.num_agents = N  # number of buyers
-        self.quantity_per_agent = q  # number of units held by each buyer
-
-        num_per_step = self.num_agents // steps
-        prices = np.linspace(p_min, p_max, steps)
-        self.price_schedule = np.array(
-            [p for p in prices for i in range(num_per_step)]
-        )
-        self.quantity_supplied = np.cumsum(
-            np.repeat(self.quantity_per_agent, self.num_agents)
-        )
-
-    def graph(self):
-        plt.step(np.append(0, self.quantity_supplied),
-                 np.append(self.price_schedule[0], self.price_schedule))
-        plt.show()
-
-    def market_graph(self, other):
-        plt.step(np.append(0, self.quantity_supplied),
-                 np.append(self.price_schedule[0], self.price_schedule))
-        plt.step(np.append(0, other.quantity_supplied),
-                 np.append(other.price_schedule[0], other.price_schedule))
-        plt.show()
-
-
-class Demand(Supply):
-    def __init__(self, N, q, p_min, p_max, steps):
-        super().__init__(N, q, p_min, p_max, steps)
-        self.price_schedule = np.flip(self.price_schedule, 0)
-
-
-class Supply2(Supply):
     def __init__(self, num_in, num_ex, q, p_min, p_eqb, num_per_step):
+        self._init_common(num_in, num_ex, q, p_min, p_eqb, num_per_step)
+
+        steps_in = num_in // num_per_step
+        prices_in = np.linspace(p_min, p_eqb, steps_in)
+        delta = (p_eqb - p_min) / (steps_in - 1)
+        steps_ex = num_ex // num_per_step
+        prices_ex = np.fromiter(
+            (p_eqb + i * delta for i in range(1, steps_ex + 1)), float
+        )
+
+        self._init_prices(prices_in, delta, prices_ex, num_per_step)
+        self.comp_theoretical_surplus()
+
+    def _init_common(self, num_in, num_ex, q, p_min, p_eqb, num_per_step):
         if num_in % num_per_step != 0:
             raise ValueError("Number of intramarginal agents \
             must be divisible by number of agents per step")
@@ -193,31 +182,67 @@ class Supply2(Supply):
             raise ValueError("Number of extramarginal agents \
             must be divisible by number of agents per step")
 
-        self.num_agents = num_in + num_ex  # number of buyers
-        self.quantity_per_agent = q  # number of units held by each buyer
+        self.num_agents = num_in + num_ex  # number of agents
+        self.q_per_agent = q  # number of units held by each agent
+        self.equilibrium_price = p_eqb
+
+    def _init_prices(self, prices_in, delta, prices_ex, num_per_step):
+        self.price_schedule_in = np.fromiter(
+            (p for p in prices_in for i in range(num_per_step)), float
+        )
+        self.price_schedule_ex = np.fromiter(
+            (p for p in prices_ex for i in range(num_per_step)), float
+        )
+        self.price_schedule = np.append(self.price_schedule_in,
+                                        self.price_schedule_ex)
+        self.cumulative_quantity = np.cumsum(
+            np.repeat(self.q_per_agent, self.num_agents)
+        )
+
+    def graph(self):
+        plt.step(np.append(0, self.cumulative_quantity),
+                 np.append(self.price_schedule[0], self.price_schedule))
+        plt.show()
+
+    def market_graph(self, other):
+        plt.step(np.append(0, self.cumulative_quantity),
+                 np.append(self.price_schedule[0], self.price_schedule))
+        plt.step(np.append(0, other.cumulative_quantity),
+                 np.append(other.price_schedule[0], other.price_schedule))
+        plt.show()
+
+    def comp_theoretical_surplus(self):
+        surplus = self.equilibrium_price - self.price_schedule_in
+        iterable = (p * self.q_per_agent for p in surplus)
+        self.theoretical_surplus = sum(np.fromiter(iterable, float))
+
+class Demand(Supply):
+    def __init__(self, num_in, num_ex, q, p_max, p_eqb, num_per_step):
+        self._init_common(num_in, num_ex, q, p_max, p_eqb, num_per_step)
 
         steps_in = num_in // num_per_step
-        prices_in = np.linspace(p_min, p_eqb, steps_in)
-        delta = (p_eqb - p_min) / (steps_in - 1)
+        prices_in = np.linspace(p_max, p_eqb, steps_in)
+        delta = (p_max - p_eqb) / (steps_in - 1)
         steps_ex = num_ex // num_per_step
-        prices_out = np.array(
-            [p_eqb + i * delta for i in range(1, steps_ex + 1)]
+        prices_ex = np.fromiter(
+            (p_eqb - i * delta for i in range(1, steps_ex + 1)), float
         )
-        prices = np.append(prices_in, prices_out)
-        self.price_schedule = np.array(
-            [p for p in prices for i in range(num_per_step)]
-        )
-        self.quantity_supplied = np.cumsum(
-            np.repeat(self.quantity_per_agent, self.num_agents)
-        )
+
+        self._init_prices(prices_in, delta, prices_ex, num_per_step)
+        self.comp_theoretical_surplus()
+
+    def comp_theoretical_surplus(self):
+        surplus = self.price_schedule_in - self.equilibrium_price
+        iterable = (p * self.q_per_agent for p in surplus)
+        self.theoretical_surplus = sum(np.fromiter(iterable, float))
 
 
 # equilibrium price is 110
 # equilibrium quantity is 24
-demand = Demand(14, 3, 50, 170, 7)
-supply = Supply(14, 3, 50, 170, 7)
+supply = Supply(10, 4, 3, 10, 110, 2)
+demand = Demand(10, 4, 3, 210, 110, 2)
 
-model = CDAmodel(demand.price_schedule, supply.price_schedule)
+model = CDAmodel(supply, demand)
 for i in range(100):
     model.step()
 
