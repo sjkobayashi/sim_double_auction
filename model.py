@@ -4,11 +4,19 @@ from collections import namedtuple
 import numpy as np
 import matplotlib.pyplot as plt
 from mesa import Agent, Model
-from mesa.time import RandomActivation
+from mesa.time import BaseScheduler
 from mesa.datacollection import DataCollector
 
 # ------------------------------ scheduler ------------------------------
 
+
+class RandomChoiceActivation(BaseScheduler):
+    """A scheduler which activates a randomly picked agent once per step."""
+    def step(self):
+        agent = random.choice(self.agents)
+        agent.step()
+        self.steps += 1
+        self.time += 1
 
 # ------------------------------ Data functions ------------------------------
 
@@ -92,8 +100,6 @@ class Trader(Agent):
     def step(self):
         if self.active:
             self.strategy()
-            self.model.datacollector.collect(self.model)
-            self.model.next_tick()
 
 
 class ZI(Trader):
@@ -109,8 +115,7 @@ class ZI(Trader):
 
 class ZIP(Trader):
     """Zero-Intelligence-Plus strategy from Cliff (1997)"""
-    def _sell_strategy(self):
-        a
+
 
 # ------------------------------ CDA ------------------------------
 Order = namedtuple('Order', ['type', 'price', 'bidder', 'asker'])
@@ -119,7 +124,6 @@ Order = namedtuple('Order', ['type', 'price', 'bidder', 'asker'])
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
     def __init__(self, supply, demand):
-        self.period = 1
         self.supply = supply
         self.demand = demand
         self.num_sellers = supply.num_agents
@@ -128,7 +132,7 @@ class CDAmodel(Model):
         self.market_price = None
 
         # How agents are activated at each step
-        self.schedule = RandomActivation(self)
+        self.schedule = RandomChoiceActivation(self)
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
@@ -142,17 +146,13 @@ class CDAmodel(Model):
 
         # Collecting data
         self.datacollector = DataCollector(
-            model_reporters={"Period": "period",
-                             "Tick": "tick",
-                             "OB": "outstanding_bid",
+            model_reporters={"OB": "outstanding_bid",
                              "OBer": get_bidder_id,
                              "OA": "outstanding_ask",
                              "OAer": get_asker_id,
                              "MarketPrice": "market_price",
                              "Traded": "traded"},
-            agent_reporters={"Period": lambda x: x.model.period,
-                             "Tick": lambda x: x.model.tick,
-                             "Role": "role",
+            agent_reporters={"Role": "role",
                              "Value": "value",
                              "Good": "good",
                              "Right": "right",
@@ -190,15 +190,11 @@ class CDAmodel(Model):
         self.market_price = contract_price
         self.traded = 1
 
-    def next_tick(self):
+    def step(self):
         if self.traded == 1:
             self.initialize_spread()
-        self.tick += 1
-
-    def step(self):
-        self.tick = 1
         self.schedule.step()
-        self.period += 1
+        self.datacollector.collect(self)
 
     def plot_model(self):
         data = self.datacollector.get_model_vars_dataframe()
@@ -303,7 +299,7 @@ supply = Supply(10, 4, 3, 10, 110, 2)
 demand = Demand(10, 4, 3, 210, 110, 2)
 
 model = CDAmodel(supply, demand)
-for i in range(100):
+for i in range(1000):
     model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
