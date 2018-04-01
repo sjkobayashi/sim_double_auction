@@ -1,5 +1,6 @@
 import random
 import math
+from collections import namedtuple
 import numpy as np
 import matplotlib.pyplot as plt
 from mesa import Agent, Model
@@ -149,6 +150,7 @@ class ZIP(Trader):
         a
 
 # ------------------------------ CDA ------------------------------
+Order = namedtuple('Order', ['type', 'price', 'bidder', 'asker'])
 
 
 class CDAmodel(Model):
@@ -161,6 +163,9 @@ class CDAmodel(Model):
         self.num_buyers = demand.num_agents
         self.initialize_spread()
         self.market_price = None
+
+        self.history = []
+
         # How agents are activated at each step
         self.schedule = RandomActivation(self)
         # Create agents
