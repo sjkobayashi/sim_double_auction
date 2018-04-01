@@ -10,43 +10,6 @@ from mesa.datacollection import DataCollector
 # ------------------------------ scheduler ------------------------------
 
 
-class CliffScheduler:
-    def __init__(self, model):
-        self.model = model
-        self.steps = 0
-        self.time = 0
-        self.buyers = []
-        self.sellers = []
-
-    def add_buyer(self, buyer):
-        self.buyers.append(buyer)
-
-    def add_seller(self, seller):
-        self.sellers.append(seller)
-
-    def remove_buyer(self, buyer):
-        while buyer in self.buyers:
-            self.buyers.remove(buyer)
-
-    def remove_seller(self, seller):
-        while seller in self.sellers:
-            self.sellers.append(seller)
-
-    def get_agent_count(self):
-        return len(self.buyers) + len(self.sellers)
-
-    def step(self):
-        proposer = random.choice(self.buyers + self.sellers)
-        proposer.step()
-        if "last guy was seller":
-            active_buyers = [buyer for buyer in self.buyers if buyer.active]
-            willing_buyers = [buyer for buyer in active_buyers if buyer.value >= "ask"]
-        else "last guy was buyer":
-            active_sellers = [buyer for seller in self.sellers if seller.active]
-            willing_sellers = [seller for seller in self.sellers if seller.value <= "bid"]
-        respoder.step()
-
-
 # ------------------------------ Data functions ------------------------------
 
 
@@ -163,8 +126,6 @@ class CDAmodel(Model):
         self.num_buyers = demand.num_agents
         self.initialize_spread()
         self.market_price = None
-
-        self.history = []
 
         # How agents are activated at each step
         self.schedule = RandomActivation(self)
