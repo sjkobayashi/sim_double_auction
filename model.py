@@ -17,6 +17,9 @@ class RandomChoiceActivation(BaseScheduler):
         agent.step()
         self.steps += 1
         self.time += 1
+        for i in self.agents:
+            i.respond()
+
 
 # ------------------------------ Data functions ------------------------------
 
@@ -33,6 +36,10 @@ def get_asker_id(model):
         return model.outstanding_asker.unique_id
     except AttributeError:
         return -1
+
+
+def get_latest_order(model):
+    return model.history[-1]
 
 
 def compute_efficiency(model):
@@ -57,10 +64,12 @@ class Trader(Agent):
             self.good = q  # good owned
             self.right = 0
             self.strategy = self._sell_strategy
+            self.response = self._sell_response
         elif role == "buyer":
             self.good = 0
             self.right = q  # right to buy
             self.strategy = self._buy_strategy
+            self.response = self._buy_response
         else:
             raise ValueError("Role must be 'seller' or 'buyer'.")
 
@@ -97,9 +106,25 @@ class Trader(Agent):
     def _buy_strategy(self):
         pass
 
+    def _sell_response(self):
+        pass
+
+    def _buy_response(self):
+        pass
+
+    def do_nothing(self):
+        self.model.history.append(
+            Order(type=None,
+                  price=None,
+                  bidder=self.unique_id,
+                  asker=self.unique_id)
+        )
+
     def step(self):
         if self.active:
             self.strategy()
+        else:
+            self.do_nothing()
 
 
 class ZI(Trader):
@@ -115,10 +140,71 @@ class ZI(Trader):
 
 class ZIP(Trader):
     """Zero-Intelligence-Plus strategy from Cliff (1997)"""
+    def __init__(self, unique_id, model, role, value, q):
+        self.__init__(self, unique_id, model, role, value, q)
+
+        self.margins = [np.random.uniform(0.05, 0.35)]
+        self.planned_bid = [self.value * (self.margins + 1)]
+        self.change = [0]
+        self.target = []
+
+    def _buy_response(self):
+        last_order = self.model.history[-1]
+        if (last_order['type'] == 'Accept Bid' or
+                last_order['type'] == 'Accept Ask'):
+            if self.planned_bid >= last_order['price']:
+                # transaction price is smaller than what I planned
+                # increase the margin
+                self.increase_target()
+                self.update_margin()
+            else:
+                if (last_order['type'] == 'Accept Bid' and
+                        self.active):
+                    # bid was accepted with a higher price than my planned bid
+                    # decrease the margin
+                    self.decrease_target()
+                    self.update_margin()
+        else:
+            # no transaction
+            if (last_order['type'] == 'Bid' and
+                    self.planned_bid < last_order['price']):
+                # bid has a higher price than my planned bid
+                # decrease the margin
+                self.decrease_target()
+                self.update_margin()
+            else:
+                # bid has a smaller price than my planned bid
+                # or there was an ask
+                # target at the highest possible bid, and update the margin
+                pass
+
+    def update_margin(self):
+        delta = self.beta * (self.target[-1] - self.planned_bid[-1])
+        new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
+        self.change.append(new_change)
+
+        new_margin = (self.planned_bid[-1] + self.change[-1])/self.value - 1
+        self.margin.append(new_margin)
+        self.planned_bid.append(self.planned_bid[-1] + self.change[-1])
+
+    def increase_target(self, last_price):
+        R = np.random.uniform(1, 1.05)
+        A = np.random.uniform(0, 0.05)
+        new_target = R * last_price + A
+        self.target.append(new_target)
+
+    def decrease_target(self, last_price):
+        R = np.random.uniform(0.95, 1)
+        A = np.random.uniform(-0.05, 0)
+        new_target = R * last_price + A
+        self.target.append(new_target)
 
 
 # ------------------------------ CDA ------------------------------
-Order = namedtuple('Order', ['type', 'price', 'bidder', 'asker'])
+
+
+Order = namedtuple('Order',
+                   ['type', 'price', 'bidder', 'asker'])
 
 
 class CDAmodel(Model):
@@ -130,6 +216,9 @@ class CDAmodel(Model):
         self.num_buyers = demand.num_agents
         self.initialize_spread()
         self.market_price = None
+        self.history = []
+        # history records an order as a bid or ask only if it updates
+        # the spread
 
         # How agents are activated at each step
         self.schedule = RandomChoiceActivation(self)
@@ -151,7 +240,8 @@ class CDAmodel(Model):
                              "OA": "outstanding_ask",
                              "OAer": get_asker_id,
                              "MarketPrice": "market_price",
-                             "Traded": "traded"},
+                             "Traded": "traded",
+                             "Order": get_latest_order},
             agent_reporters={"Role": "role",
                              "Value": "value",
                              "Good": "good",
@@ -173,16 +263,64 @@ class CDAmodel(Model):
             # Update the outstanding bid
             self.outstanding_bid = price
             self.outstanding_bidder = bidder
-        if price > self.outstanding_ask:
-            self.execute_contract(price)
+
+            if price > self.outstanding_ask:
+                # a transaction happens
+                contract_price = self.outstanding_ask
+                self.execute_contract(contract_price)
+                self.history.append(
+                    Order(type='Accept Ask',
+                          price=contract_price,
+                          bidder=bidder.unique_id,
+                          asker=self.outstanding_asker.unique_id)
+                )
+            else:
+                self.history.append(
+                    Order(type='Bid',
+                          price=price,
+                          bidder=bidder.unique_id,
+                          asker=None)
+                )
+        else:
+            # null order
+            self.history.append(
+                Order(type=None,
+                      price=price,
+                      bidder=bidder.unique_id,
+                      asker=None)
+                )
 
     def update_oa(self, asker, price):
         if price < self.outstanding_ask:
             # Update the outstanding ask
             self.outstanding_ask = price
             self.outstanding_asker = asker
-        if price < self.outstanding_bid:
-            self.execute_contract(price)
+
+            if price < self.outstanding_bid:
+                contract_price = self.outstanding_bid
+                self.execute_contract(contract_price)
+                self.history.append(
+                    Order(type='Accept Bid',
+                          price=contract_price,
+                          bidder=self.outstanding_bidder.unique_id,
+                          asker=asker.unique_id)
+                )
+            else:
+                # only updated the outstanding ask
+                self.history.append(
+                    Order(type='Ask',
+                          price=price,
+                          bidder=None,
+                          asker=asker.unique_id)
+                )
+        else:
+            # null order
+            self.history.append(
+                Order(type=None,
+                      price=price,
+                      bidder=None,
+                      asker=asker.unique_id)
+            )
 
     def execute_contract(self, contract_price):
         self.outstanding_bidder.buy(contract_price)
@@ -303,7 +441,7 @@ for i in range(1000):
     model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
-data_model = data_model[data_model.Traded == 1]
+data_traded_model = data_model[data_model.Traded == 1]
 
 data_agent = model.datacollector.get_agent_vars_dataframe()
 
