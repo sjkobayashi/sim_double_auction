@@ -18,7 +18,7 @@ class RandomChoiceActivation(BaseScheduler):
         self.steps += 1
         self.time += 1
         for i in self.agents:
-            i.respond()
+            i.response()
 
 
 # ------------------------------ Data functions ------------------------------
@@ -141,51 +141,98 @@ class ZI(Trader):
 class ZIP(Trader):
     """Zero-Intelligence-Plus strategy from Cliff (1997)"""
     def __init__(self, unique_id, model, role, value, q):
-        self.__init__(self, unique_id, model, role, value, q)
+        super().__init__(unique_id, model, role, value, q)
 
-        self.margins = [np.random.uniform(0.05, 0.35)]
-        self.planned_bid = [self.value * (self.margins + 1)]
+        self.beta = np.random.uniform(0.1, 0.5)
+        self.gamma = np.random.uniform(0, 0.1)
+
+        if role == "seller":
+            self.margins = [np.random.uniform(0.05, 0.35)]
+        elif role == "buyer":
+            self.margins = [np.random.uniform(-0.35, -0.05)]
+        else:
+            raise ValueError("Role must be 'seller' or 'buyer'.")
+
+        self.planned_shout = [self.value * (self.margins[0] + 1)]
         self.change = [0]
         self.target = []
 
-    def _buy_response(self):
+    def _sell_strategy(self):
+        self.ask(self.planned_shout[-1])
+
+    def _buy_strategy(self):
+        self.bid(self.planned_shout[-1])
+
+    def _sell_response(self):
         last_order = self.model.history[-1]
-        if (last_order['type'] == 'Accept Bid' or
-                last_order['type'] == 'Accept Ask'):
-            if self.planned_bid >= last_order['price']:
-                # transaction price is smaller than what I planned
+        if (last_order.type == 'Accept Bid' or
+                last_order.type == 'Accept Ask'):
+            if self.planned_shout[-1] <= last_order.price:
+                # transaction price is higher than what I planned
                 # increase the margin
-                self.increase_target()
+                self.increase_target(last_order.price)
                 self.update_margin()
             else:
-                if (last_order['type'] == 'Accept Bid' and
+                if (last_order.type == 'Accept Ask' and
                         self.active):
-                    # bid was accepted with a higher price than my planned bid
+                    # bid was accepted with a smaller price than my planned ask
                     # decrease the margin
-                    self.decrease_target()
+                    self.decrease_target(last_order.price)
                     self.update_margin()
         else:
             # no transaction
-            if (last_order['type'] == 'Bid' and
-                    self.planned_bid < last_order['price']):
+            if (last_order.type == 'Ask' and
+                    self.planned_shout[-1] > last_order.price):
+                # ask has a smaller price than my planned ask
+                # decrease the margin
+                self.decrease_target(last_order.price)
+                self.update_margin()
+            else:
+                # ask has a higher price than my planned ask
+                # or there was a bid
+                # target at the smallest possible ask, and update the margin
+                # stub order
+                pass
+
+    def _buy_response(self):
+        last_order = self.model.history[-1]
+        if (last_order.type == 'Accept Bid' or
+                last_order.type == 'Accept Ask'):
+            if self.planned_shout[-1] >= last_order.price:
+                # transaction price is smaller than what I planned
+                # increase the margin
+                self.decrease_target(last_order.price)
+                self.update_margin()
+            else:
+                if (last_order.type == 'Accept Bid' and
+                        self.active):
+                    # bid was accepted with a higher price than my planned bid
+                    # decrease the margin
+                    self.increase_target(last_order.price)
+                    self.update_margin()
+        else:
+            # no transaction
+            if (last_order.type == 'Bid' and
+                    self.planned_shout[-1] < last_order.price):
                 # bid has a higher price than my planned bid
                 # decrease the margin
-                self.decrease_target()
+                self.increase_target(last_order.price)
                 self.update_margin()
             else:
                 # bid has a smaller price than my planned bid
                 # or there was an ask
                 # target at the highest possible bid, and update the margin
+                # stub order
                 pass
 
     def update_margin(self):
-        delta = self.beta * (self.target[-1] - self.planned_bid[-1])
+        delta = self.beta * (self.target[-1] - self.planned_shout[-1])
         new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
         self.change.append(new_change)
 
-        new_margin = (self.planned_bid[-1] + self.change[-1])/self.value - 1
-        self.margin.append(new_margin)
-        self.planned_bid.append(self.planned_bid[-1] + self.change[-1])
+        new_margin = (self.planned_shout[-1] + self.change[-1])/self.value - 1
+        self.margins.append(new_margin)
+        self.planned_shout.append(self.planned_shout[-1] + self.change[-1])
 
     def increase_target(self, last_price):
         R = np.random.uniform(1, 1.05)
@@ -225,12 +272,13 @@ class CDAmodel(Model):
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                ZI(i, self, "buyer", value, demand.q_per_agent)
+                ZIP(i, self, "buyer", value, demand.q_per_agent)
             )
+
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                ZI(j, self, "seller", cost, supply.q_per_agent)
+                ZIP(j, self, "seller", cost, supply.q_per_agent)
             )
 
         # Collecting data
@@ -242,7 +290,8 @@ class CDAmodel(Model):
                              "MarketPrice": "market_price",
                              "Traded": "traded",
                              "Order": get_latest_order},
-            agent_reporters={"Role": "role",
+            agent_reporters={"Type": lambda x: type(x),
+                             "Role": "role",
                              "Value": "value",
                              "Good": "good",
                              "Right": "right",
