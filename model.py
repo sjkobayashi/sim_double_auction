@@ -171,14 +171,14 @@ class ZIP(Trader):
                 # transaction price is higher than what I planned
                 # increase the margin
                 self.increase_target(last_order.price)
-                self.update_margin()
+                self._sell_update_margin()
             else:
                 if (last_order.type == 'Accept Ask' and
                         self.active):
                     # bid was accepted with a smaller price than my planned ask
                     # decrease the margin
                     self.decrease_target(last_order.price)
-                    self.update_margin()
+                    self._sell_update_margin()
         else:
             # no transaction
             if (last_order.type == 'Ask' and
@@ -186,7 +186,7 @@ class ZIP(Trader):
                 # ask has a smaller price than my planned ask
                 # decrease the margin
                 self.decrease_target(last_order.price)
-                self.update_margin()
+                self._sell_update_margin()
             else:
                 # ask has a higher price than my planned ask
                 # or there was a bid
@@ -202,14 +202,14 @@ class ZIP(Trader):
                 # transaction price is smaller than what I planned
                 # increase the margin
                 self.decrease_target(last_order.price)
-                self.update_margin()
+                self._buy_update_margin()
             else:
                 if (last_order.type == 'Accept Bid' and
                         self.active):
                     # bid was accepted with a higher price than my planned bid
                     # decrease the margin
                     self.increase_target(last_order.price)
-                    self.update_margin()
+                    self._buy_update_margin()
         else:
             # no transaction
             if (last_order.type == 'Bid' and
@@ -217,7 +217,7 @@ class ZIP(Trader):
                 # bid has a higher price than my planned bid
                 # decrease the margin
                 self.increase_target(last_order.price)
-                self.update_margin()
+                self._buy_update_margin()
             else:
                 # bid has a smaller price than my planned bid
                 # or there was an ask
@@ -225,14 +225,29 @@ class ZIP(Trader):
                 # stub order
                 pass
 
-    def update_margin(self):
+    def _sell_update_margin(self):
         delta = self.beta * (self.target[-1] - self.planned_shout[-1])
         new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
         self.change.append(new_change)
 
-        new_margin = (self.planned_shout[-1] + self.change[-1])/self.value - 1
-        self.margins.append(new_margin)
-        self.planned_shout.append(self.planned_shout[-1] + self.change[-1])
+        next_shout = self.planned_shout[-1] + self.change[-1]
+
+        if next_shout >= self.value:
+            self.planned_shout.append(next_shout)
+            new_margin = next_shout / self.value - 1
+            self.margins.append(new_margin)
+
+    def _buy_update_margin(self):
+        delta = self.beta * (self.target[-1] - self.planned_shout[-1])
+        new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
+        self.change.append(new_change)
+
+        next_shout = self.planned_shout[-1] + self.change[-1]
+
+        if next_shout <= self.value:
+            self.planned_shout.append(next_shout)
+            new_margin = next_shout / self.value - 1
+            self.margins.append(new_margin)
 
     def increase_target(self, last_price):
         R = np.random.uniform(1, 1.05)
@@ -482,8 +497,8 @@ class Demand(Supply):
 
 
 # equilibrium price is 110
-supply = Supply(10, 4, 3, 10, 110, 2)
-demand = Demand(10, 4, 3, 210, 110, 2)
+supply = Supply(6, 5, 1, 75, 200, 1)
+demand = Demand(6, 5, 1, 325, 200, 1)
 
 model = CDAmodel(supply, demand)
 for i in range(1000):
@@ -495,3 +510,7 @@ data_traded_model = data_model[data_model.Traded == 1]
 data_agent = model.datacollector.get_agent_vars_dataframe()
 
 model.plot_model()
+
+
+def get_agent(unique_id):
+    return [i for i in model.schedule.agents if i.unique_id == unique_id][0]
