@@ -262,6 +262,35 @@ class ZIP(Trader):
         self.target.append(new_target)
 
 
+class GD(Trader):
+    def buy_belief(self):
+        def TAG(ask):
+            history = self.model.history
+            accepted_asks = [order for order in history
+                             if order.type == "Accept Ask"]
+            return len([order for order in accepted_asks
+                        if order.price >= ask])
+
+        def TBG(ask):
+            history = self.model.history
+            accepted_bids = [order for order in history
+                             if order.type == "Accept Bid"]
+            return len([order for order in accepted_bids
+                        if order.price >= ask])
+
+        def RAL(ask):
+            history = self.model.history
+            asks = [order.price for order in history
+                    if order.type == "Ask" or order.type == "Accept Ask"]
+            accepted_asks = [order for order in history
+                             if order.type == "Accept Ask"]
+            num_asks_l = len([order for order in asks if order.price <= ask])
+            num_acc_asks_l = len([order for order in accepted_asks
+                                  if order.price <= ask])
+            return num_asks_l + num_acc_asks_l
+
+
+
 # ------------------------------ CDA ------------------------------
 
 
