@@ -130,6 +130,7 @@ class Trader(Agent):
 class ZI(Trader):
     """Zero-Intelligence strategy from Gode and Sunder (1993)"""
     def _sell_strategy(self):
+        # @@@
         price = random.randint(self.value, 200)
         self.ask(price)
 
@@ -263,32 +264,70 @@ class ZIP(Trader):
 
 
 class GD(Trader):
-    def buy_belief(self):
-        def TAG(ask):
-            history = self.model.history
-            accepted_asks = [order for order in history
-                             if order.type == "Accept Ask"]
-            return len([order for order in accepted_asks
-                        if order.price >= ask])
+    def __init__(self, unique_id, model, role, value, q):
+        super().__init__(unique_id, model, role, value, q)
+        self.eta = 0.001
+        self.highest_ask = 325
+        self.lowest_bid = 0
 
-        def TBG(ask):
-            history = self.model.history
-            accepted_bids = [order for order in history
-                             if order.type == "Accept Bid"]
-            return len([order for order in accepted_bids
-                        if order.price >= ask])
+    def _sell_belief(self, ask):
+        if ask >= self.model.outstanding_ask:
+            return 0
 
-        def RAL(ask):
-            history = self.model.history
-            asks = [order.price for order in history
-                    if order.type == "Ask" or order.type == "Accept Ask"]
-            accepted_asks = [order for order in history
-                             if order.type == "Accept Ask"]
-            num_asks_l = len([order for order in asks if order.price <= ask])
-            num_acc_asks_l = len([order for order in accepted_asks
-                                  if order.price <= ask])
-            return num_asks_l + num_acc_asks_l
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
 
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        asks = history.get_asks()
+        accepted_asks = history.get_accepted_asks()
+        accepted_bids = history.get_accepted_bids()
+
+        TAG = num_geq(accepted_asks, ask)
+        TBG = num_geq(accepted_bids, ask)
+        RAL = num_leq(asks, ask) - num_leq(accepted_asks, ask)
+
+        if TAG + TBG == 0:
+            return self.eta
+        else:
+            return (TAG + TBG) / (TAG + TBG + RAL)
+
+    def _sell_surplus_maximizer(self, prices):
+        def exp_surplus(price):
+            return (price - self.value) * self._sell_belief(price)
+
+        exp_surpluses = [exp_surplus(price) for price in prices]
+        max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
+        return max_index
+
+    def _sell_strategy(self):
+        if self.value >= self.model.outstanding_ask:
+            self.do_nothing()
+        prices = self.model.history.get_prices()
+        prices.append(self.lowest_bid)
+        prices.append(self.highest_ask)
+        prices.sort()
+        max_index = self._sell_surplus_maximizer(prices)
+        max_price = prices[max_index]
+
+        if max_index == 0:
+            smallest_gap = prices[max_index + 1] - max_price
+        elif max_index == len(prices) - 1:
+            smallest_gap = max_price - prices[max_index - 1]
+        else:
+            smallest_gap = min(max_price - prices[max_index - 1],
+                               prices[max_index + 1] - max_price)
+
+        # max_price - smallest_gap results in the outstanding ask
+        # if eta is given for ask >= oa
+        a = max(max_price - smallest_gap, self.value)
+        b = min(max_price + smallest_gap, self.model.outstanding_ask)
+
+        planned_ask = np.random.uniform(a, b)
+
+        self.ask(planned_ask)
 
 
 # ------------------------------ CDA ------------------------------
@@ -296,6 +335,33 @@ class GD(Trader):
 
 Order = namedtuple('Order',
                    ['type', 'price', 'bidder', 'asker'])
+
+
+class Order_history(list):
+    def get_prices(self):
+        prices = [order.price for order in self
+                  if order.type is not None]
+        return prices
+
+    def get_asks(self):
+        asks = [order.price for order in self if order.type == "Ask"
+                or order.type == "Accept Ask"]
+        return asks
+
+    def get_bids(self):
+        bids = [order.price for order in self if order.type == "Bid"
+                or order.type == "Accept Bid"]
+        return bids
+
+    def get_accepted_asks(self):
+        accepted_asks = [order.price for order in self
+                         if order.type == "Accept Ask"]
+        return accepted_asks
+
+    def get_accepted_bids(self):
+        accepted_bids = [order.price for order in self
+                         if order.type == "Accept Bid"]
+        return accepted_bids
 
 
 class CDAmodel(Model):
@@ -307,7 +373,7 @@ class CDAmodel(Model):
         self.num_buyers = demand.num_agents
         self.initialize_spread()
         self.market_price = None
-        self.history = []
+        self.history = Order_history()
         # history records an order as a bid or ask only if it updates
         # the spread
 
@@ -322,7 +388,7 @@ class CDAmodel(Model):
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                ZIP(j, self, "seller", cost, supply.q_per_agent)
+                GD(j, self, "seller", cost, supply.q_per_agent)
             )
 
         # Collecting data
@@ -526,8 +592,11 @@ class Demand(Supply):
 
 
 # equilibrium price is 110
-supply = Supply(6, 5, 1, 75, 200, 1)
-demand = Demand(6, 5, 1, 325, 200, 1)
+supply = Supply(6, 5, 3, 75, 200, 1)
+demand = Demand(6, 5, 3, 325, 200, 1)
+
+supply = Supply(9, 5, 3, 75, 200, 1)
+demand = Demand(9, 5, 3, 325, 200, 1)
 
 model = CDAmodel(supply, demand)
 for i in range(1000):
