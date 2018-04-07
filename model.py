@@ -54,6 +54,14 @@ def compute_efficiency(model):
 # ------------------------------ Traders ------------------------------
 
 
+def uniform_dollar(a, b):
+    A = round(a, 2)
+    B = float('%.2f'%b)
+    interval = np.arange(A, B, 0.01)
+    x = random.choice(interval)
+    return round(x, 2)
+
+
 class Trader(Agent):
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model)
@@ -267,7 +275,7 @@ class GD(Trader):
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model, role, value, q)
         self.eta = 0.001
-        self.highest_ask = 325
+        self.highest_ask = 10
         self.lowest_bid = 0
 
     def _sell_belief(self, ask):
@@ -294,9 +302,41 @@ class GD(Trader):
         else:
             return (TAG + TBG) / (TAG + TBG + RAL)
 
+    def _buy_belief(self, bid):
+        if bid <= self.model.outstanding_bid:
+            return 0
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        bids = history.get_bids()
+        accepted_asks = history.get_accepted_asks()
+        accepted_bids = history.get_accepted_bids()
+
+        TBL = num_leq(accepted_bids, bid)
+        TAL = num_leq(accepted_asks, bid)
+        RBG = num_geq(bids, bid) - num_geq(accepted_bids, bid)
+
+        if TBL + TAL == 0:
+            return self.eta
+        else:
+            return (TBL + TAL) / (TBL + TAL + RBG)
+
     def _sell_surplus_maximizer(self, prices):
         def exp_surplus(price):
             return (price - self.value) * self._sell_belief(price)
+
+        exp_surpluses = [exp_surplus(price) for price in prices]
+        max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
+        return max_index
+
+    def _buy_surplus_maximizer(self, prices):
+        def exp_surplus(price):
+            return (self.value - price) * self._buy_belief(price)
 
         exp_surpluses = [exp_surplus(price) for price in prices]
         max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
@@ -328,7 +368,35 @@ class GD(Trader):
         planned_ask = np.random.uniform(a, b)
 
         self.ask(planned_ask)
+        self.model.unif = (a, b)
 
+    def _buy_strategy(self):
+        if self.value <= self.model.outstanding_bid:
+            self.do_nothing()
+        prices = self.model.history.get_prices()
+        prices.append(self.lowest_bid)
+        prices.append(self.highest_ask)
+        prices.sort()
+        max_index = self._buy_surplus_maximizer(prices)
+        max_price = prices[max_index]
+
+        if max_index == 0:
+            smallest_gap = prices[max_index + 1] - max_price
+        elif max_index == len(prices) - 1:
+            smallest_gap = max_price - prices[max_index - 1]
+        else:
+            smallest_gap = min(max_price - prices[max_index - 1],
+                               prices[max_index + 1] - max_price)
+
+        # max_price - smallest_gap results in the outstanding ask
+        # if eta is given for ask >= oa
+        a = max(max_price - smallest_gap, self.model.outstanding_bid)
+        b = min(max_price + smallest_gap, self.value)
+
+        planned_bid = np.random.uniform(a, b)
+
+        self.bid(planned_bid)
+        self.model.unif = (a, b)
 
 # ------------------------------ CDA ------------------------------
 
@@ -337,10 +405,11 @@ Order = namedtuple('Order',
                    ['type', 'price', 'bidder', 'asker'])
 
 
+# exclude outstanding spread?
 class Order_history(list):
     def get_prices(self):
-        prices = [order.price for order in self
-                  if order.type is not None]
+        prices = list({order.price for order in self
+                       if order.type is not None})
         return prices
 
     def get_asks(self):
@@ -367,6 +436,7 @@ class Order_history(list):
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
     def __init__(self, supply, demand):
+        self.unif = (0, 0)
         self.supply = supply
         self.demand = demand
         self.num_sellers = supply.num_agents
@@ -382,7 +452,7 @@ class CDAmodel(Model):
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                ZIP(i, self, "buyer", value, demand.q_per_agent)
+                GD(i, self, "buyer", value, demand.q_per_agent)
             )
 
         for i, cost in enumerate(supply.price_schedule):
@@ -399,7 +469,8 @@ class CDAmodel(Model):
                              "OAer": get_asker_id,
                              "MarketPrice": "market_price",
                              "Traded": "traded",
-                             "Order": get_latest_order},
+                             "Order": get_latest_order,
+                             "Unif": "unif"},
             agent_reporters={"Type": lambda x: type(x),
                              "Role": "role",
                              "Value": "value",
@@ -591,15 +662,16 @@ class Demand(Supply):
 # ------------------------------ Simulation ------------------------------
 
 
-# equilibrium price is 110
+# ZIP
 supply = Supply(6, 5, 3, 75, 200, 1)
 demand = Demand(6, 5, 3, 325, 200, 1)
 
-supply = Supply(9, 5, 3, 75, 200, 1)
-demand = Demand(9, 5, 3, 325, 200, 1)
+# GD
+supply = Supply(7, 5, 1, 1.45, 2.50, 1)
+demand = Demand(7, 5, 1, 3.55, 2.50, 1)
 
 model = CDAmodel(supply, demand)
-for i in range(1000):
+for i in range(100):
     model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
