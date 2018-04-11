@@ -25,6 +25,7 @@ class RandomChoiceActivation(BaseScheduler):
 
 
 def get_bidder_id(model):
+    # Displays the unique ID of the outstanding bidder.
     try:
         return model.outstanding_bidder.unique_id
     except AttributeError:
@@ -32,6 +33,7 @@ def get_bidder_id(model):
 
 
 def get_asker_id(model):
+    # Displays the unique ID of the outstanding asker.
     try:
         return model.outstanding_asker.unique_id
     except AttributeError:
@@ -39,10 +41,13 @@ def get_asker_id(model):
 
 
 def get_latest_order(model):
+    # Displays the latest order from the history
     return model.history[-1]
 
 
 def compute_efficiency(model):
+    # Compute the efficiency of traders' surplus
+    # in contrast to the theoretical maximum surplus.
     producer_surplus = model.supply.theoretical_surplus
     consumer_surplus = model.demand.theoretical_surplus
     total_surplus = producer_surplus + consumer_surplus
@@ -55,6 +60,7 @@ def compute_efficiency(model):
 
 
 def uniform_dollar(a, b):
+    # Uniform discrete distribution for dollar values.
     A = round(a, 2)
     B = float('%.2f'%b)
     interval = np.arange(A, B, 0.01)
@@ -63,6 +69,7 @@ def uniform_dollar(a, b):
 
 
 class Trader(Agent):
+    """A base class for traders"""
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model)
         self.role = role  # buyer or seller
@@ -85,14 +92,15 @@ class Trader(Agent):
         self.active = True
 
     def bid(self, price):
-        # Submit a bid to the CDA.
+        """Submit a bid to the CDA."""
         self.model.update_ob(self, price)
 
     def ask(self, price):
-        # Submit an ask to the CDA.
+        """Submit an ask to the CDA."""
         self.model.update_oa(self, price)
 
     def buy(self, price):
+        """Buy a good from someone"""
         self.good += 1
         self.right -= 1
         self.surplus += self.value - price
@@ -101,6 +109,7 @@ class Trader(Agent):
             self.active = False
 
     def sell(self, price):
+        """Sell a good to someone"""
         self.good -= 1
         self.right += 1
         self.surplus += price - self.value
@@ -109,18 +118,23 @@ class Trader(Agent):
             self.active = False
 
     def _sell_strategy(self):
+        """Strategy for selling."""
         pass
 
     def _buy_strategy(self):
+        """Strategy for buying."""
         pass
 
     def _sell_response(self):
+        """How a seller responds to someone's action."""
         pass
 
     def _buy_response(self):
+        """How a buyer responds to someone's action."""
         pass
 
     def do_nothing(self):
+        """Send a message to the history that the trader did nothing."""
         self.model.history.append(
             Order(type=None,
                   price=None,
@@ -129,6 +143,7 @@ class Trader(Agent):
         )
 
     def step(self):
+        """How the trader acts when he is picked by the scheduler."""
         if self.active:
             self.strategy()
         else:
@@ -136,19 +151,22 @@ class Trader(Agent):
 
 
 class ZI(Trader):
-    """Zero-Intelligence strategy from Gode and Sunder (1993)"""
+    """Zero-Intelligence strategy from Gode and Sunder (1993)."""
     def _sell_strategy(self):
-        # @@@
+        """Strategy for selling. Pick a value from uniform discrete \
+        distribution (v_i, 200)."""
         price = random.randint(self.value, 200)
         self.ask(price)
 
     def _buy_strategy(self):
+        """Strategy for buying. Pick a value from uniform discrete \
+        distribution (0, v_i)."""
         price = random.randint(1, self.value)
         self.bid(price)
 
 
 class ZIP(Trader):
-    """Zero-Intelligence-Plus strategy from Cliff (1997)"""
+    """Zero-Intelligence-Plus strategy from Cliff (1997)."""
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model, role, value, q)
 
@@ -167,12 +185,15 @@ class ZIP(Trader):
         self.target = []
 
     def _sell_strategy(self):
+        """Submit the planned ask."""
         self.ask(self.planned_shout[-1])
 
     def _buy_strategy(self):
+        """Submit the planned bid."""
         self.bid(self.planned_shout[-1])
 
     def _sell_response(self):
+        """Observe the last shout and change the planned ask."""
         last_order = self.model.history[-1]
         if (last_order.type == 'Accept Bid' or
                 last_order.type == 'Accept Ask'):
@@ -204,6 +225,7 @@ class ZIP(Trader):
                 pass
 
     def _buy_response(self):
+        """Observe the last shout and change the planned bid."""
         last_order = self.model.history[-1]
         if (last_order.type == 'Accept Bid' or
                 last_order.type == 'Accept Ask'):
@@ -235,6 +257,7 @@ class ZIP(Trader):
                 pass
 
     def _sell_update_margin(self):
+        """Update the margin and planned ask."""
         delta = self.beta * (self.target[-1] - self.planned_shout[-1])
         new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
         self.change.append(new_change)
@@ -247,6 +270,7 @@ class ZIP(Trader):
             self.margins.append(new_margin)
 
     def _buy_update_margin(self):
+        """Update the margin and planned bid."""
         delta = self.beta * (self.target[-1] - self.planned_shout[-1])
         new_change = self.gamma * self.change[-1] + (1 - self.gamma) * delta
         self.change.append(new_change)
@@ -259,12 +283,14 @@ class ZIP(Trader):
             self.margins.append(new_margin)
 
     def increase_target(self, last_price):
+        """Compute the target for increasing the planned ask."""
         R = np.random.uniform(1, 1.05)
         A = np.random.uniform(0, 0.05)
         new_target = R * last_price + A
         self.target.append(new_target)
 
     def decrease_target(self, last_price):
+        """Compute the target for increasing the planned bid."""
         R = np.random.uniform(0.95, 1)
         A = np.random.uniform(-0.05, 0)
         new_target = R * last_price + A
@@ -272,6 +298,7 @@ class ZIP(Trader):
 
 
 class GD(Trader):
+    """Gjerstad-Dickhaut strategy from Gjerstad and Dickhaut (1998)"""
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model, role, value, q)
         self.eta = 0.001
@@ -279,6 +306,7 @@ class GD(Trader):
         self.lowest_bid = 0
 
     def _sell_belief(self, ask):
+        """Compute the seller's belief that an ask will be accepted."""
         if ask >= self.model.outstanding_ask:
             return 0
 
@@ -303,6 +331,7 @@ class GD(Trader):
             return (TAG + TBG) / (TAG + TBG + RAL)
 
     def _buy_belief(self, bid):
+        """Compute the buyer's belief that an bid will be accepted."""
         if bid <= self.model.outstanding_bid:
             return 0
 
@@ -327,6 +356,8 @@ class GD(Trader):
             return (TBL + TAL) / (TBL + TAL + RBG)
 
     def _sell_surplus_maximizer(self, prices):
+        """Given a list of prices, find the price that maximizes \
+        the seller's expected surplus."""
         def exp_surplus(price):
             return (price - self.value) * self._sell_belief(price)
 
@@ -335,6 +366,8 @@ class GD(Trader):
         return max_index
 
     def _buy_surplus_maximizer(self, prices):
+        """Given a list of prices, find the price that maximizes \
+        the buyer's expected surplus."""
         def exp_surplus(price):
             return (self.value - price) * self._buy_belief(price)
 
@@ -343,6 +376,8 @@ class GD(Trader):
         return max_index
 
     def _sell_strategy(self):
+        """Randomize the expected surplus maximizing price \
+        and submit it an ask."""
         if self.value >= self.model.outstanding_ask:
             self.do_nothing()
         prices = self.model.history.get_prices()
@@ -371,6 +406,8 @@ class GD(Trader):
         self.model.unif = (a, b)
 
     def _buy_strategy(self):
+        """Randomize the expected surplus maximizing price \
+        and submit it a bid."""
         if self.value <= self.model.outstanding_bid:
             self.do_nothing()
         prices = self.model.history.get_prices()
