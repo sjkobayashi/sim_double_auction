@@ -382,28 +382,31 @@ class GD(Trader):
             self.do_nothing()
             return
 
-        prices = self.model.history.get_prices()
-        prices.append(self.lowest_bid)
-        prices.append(self.highest_ask)
-        prices.sort()
-        max_index = self._sell_surplus_maximizer(prices)
-        max_price = prices[max_index]
-
-        if max_index == 0:
-            smallest_gap = prices[max_index + 1] - max_price
-        elif max_index == len(prices) - 1:
-            smallest_gap = max_price - prices[max_index - 1]
+        if self.model.num_traded == 0:
+            # If no trade has occurred, be a smarter ZI.
+            a = self.value
+            b = min(self.model.outstanding_ask, self.highest_ask)
         else:
-            smallest_gap = min(max_price - prices[max_index - 1],
-                               prices[max_index + 1] - max_price)
+            prices = self.model.history.get_prices()
+            prices.append(self.lowest_bid)
+            prices.append(self.highest_ask)
+            prices.sort()
+            max_index = self._sell_surplus_maximizer(prices)
+            max_price = prices[max_index]
 
-        # max_price - smallest_gap results in the outstanding ask
-        # if eta is given for ask >= oa
-        a = max(max_price - smallest_gap, self.value)
-        b = min(max_price + smallest_gap, self.model.outstanding_ask)
+            if max_index == 0:
+                smallest_gap = prices[max_index + 1] - max_price
+            elif max_index == len(prices) - 1:
+                smallest_gap = max_price - prices[max_index - 1]
+            else:
+                smallest_gap = min(max_price - prices[max_index - 1],
+                                   prices[max_index + 1] - max_price)
+            # max_price - smallest_gap results in the outstanding ask
+            # if eta is given for ask >= oa
+            a = max(max_price - smallest_gap, self.value)
+            b = min(max_price + smallest_gap, self.model.outstanding_ask)
 
         planned_ask = np.random.uniform(a, b)
-
         self.ask(planned_ask)
         self.model.unif = (a, b)
 
@@ -416,7 +419,8 @@ class GD(Trader):
             return
 
         if self.model.num_traded == 0:
-            a = self.model.outstanding_bid
+            # If no trade has occurred, be a smarter ZI.
+            a = max(0, self.model.outstanding_bid)
             b = self.value
         else:
             prices = self.model.history.get_prices()
@@ -433,13 +437,12 @@ class GD(Trader):
             else:
                 smallest_gap = min(max_price - prices[max_index - 1],
                                    prices[max_index + 1] - max_price)
-                # max_price - smallest_gap results in the outstanding ask
-                # if eta is given for ask >= oa
+            # max_price - smallest_gap results in the outstanding ask
+            # if eta is given for ask >= oa
             a = max(max_price - smallest_gap, self.model.outstanding_bid)
             b = min(max_price + smallest_gap, self.value)
 
         planned_bid = np.random.uniform(a, b)
-
         self.bid(planned_bid)
         self.model.unif = (a, b)
 
@@ -493,32 +496,6 @@ class Order_history(list):
                          if order.type == "Accept Bid"]
         return accepted_bids
 
-# class Order_history(list):
-#     def get_prices(self):
-#         prices = list({order.price for order in self
-#                        if order.type is not None})
-#         return prices
-
-#     def get_asks(self):
-#         asks = [order.price for order in self if order.type == "Ask"
-#                 or order.type == "Accept Ask"]
-#         return asks
-
-#     def get_bids(self):
-#         bids = [order.price for order in self if order.type == "Bid"
-#                 or order.type == "Accept Bid"]
-#         return bids
-
-#     def get_accepted_asks(self):
-#         accepted_asks = [order.price for order in self
-#                          if order.type == "Accept Ask"]
-#         return accepted_asks
-
-#     def get_accepted_bids(self):
-#         accepted_bids = [order.price for order in self
-#                          if order.type == "Accept Bid"]
-#         return accepted_bids
-
 
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
@@ -538,10 +515,10 @@ class CDAmodel(Model):
         # How agents are activated at each step
         self.schedule = RandomChoiceActivation(self)
         # Create agents
-        # for i, value in enumerate(demand.price_schedule):
-        #     self.schedule.add(
-        #         GD(i, self, "buyer", value, demand.q_per_agent)
-        #     )
+        for i, value in enumerate(demand.price_schedule):
+            self.schedule.add(
+                GD(i, self, "buyer", value, demand.q_per_agent)
+            )
 
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
@@ -760,7 +737,7 @@ supply = Supply(7, 5, 1, 1.45, 2.50, 1)
 demand = Demand(7, 5, 1, 3.55, 2.50, 1)
 
 model = CDAmodel(supply, demand)
-for i in range(10):
+for i in range(1000):
     model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
