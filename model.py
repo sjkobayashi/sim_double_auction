@@ -62,7 +62,7 @@ def compute_efficiency(model):
 def uniform_dollar(a, b):
     # Uniform discrete distribution for dollar values.
     A = round(a, 2)
-    B = float('%.2f'%b)
+    B = round(b, 2)
     interval = np.arange(A, B, 0.01)
     x = random.choice(interval)
     return round(x, 2)
@@ -733,8 +733,8 @@ supply = Supply(6, 5, 3, 75, 200, 1)
 demand = Demand(6, 5, 3, 325, 200, 1)
 
 # GD
-supply = Supply(7, 5, 1, 1.45, 2.50, 1)
-demand = Demand(7, 5, 1, 3.55, 2.50, 1)
+supply = Supply(7, 5, 5, 1.45, 2.50, 1)
+demand = Demand(7, 5, 5, 3.55, 2.50, 1)
 
 model = CDAmodel(supply, demand)
 for i in range(1000):
