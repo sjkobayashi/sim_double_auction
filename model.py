@@ -57,11 +57,11 @@ def compute_efficiency(model):
 
 def uniform_dollar(a, b):
     # Uniform discrete distribution for dollar values.
-    A = round(a, 2)
-    B = round(b, 2)
-    interval = np.arange(A, B, 0.01)
+    A = int(round(a, 2) * 100)
+    B = int(round(b, 2) * 100)
+    interval = np.arange(A, B + 1)
     x = random.choice(interval)
-    return round(x, 2)
+    return x / 100
 
 
 class GD(Trader):
@@ -213,56 +213,191 @@ class GD(Trader):
         self.bid(planned_bid)
         self.model.unif = (a, b)
 
+
+
+class GDtest(Trader):
+    """Gjerstad-Dickhaut strategy from Gjerstad and Dickhaut (1998)"""
+    def __init__(self, unique_id, model, role, value, q):
+        super().__init__(unique_id, model, role, value, q)
+        self.eta = 0.001
+        self.highest_ask = 10.0
+        self.lowest_bid = 0.0
+
+    def _sell_belief(self, ask):
+        """Compute the seller's belief that an ask will be accepted."""
+        if ask >= self.model.outstanding_ask:
+            return 0
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        asks = history.get_asks()
+        accepted_asks = history.get_accepted_asks()
+        accepted_bids = history.get_accepted_bids()
+
+        TAG = num_geq(accepted_asks, ask)
+        TBG = num_geq(accepted_bids, ask)
+        RAL = num_leq(asks, ask) - num_leq(accepted_asks, ask)
+
+        if TAG + TBG == 0:
+            return self.eta
+        else:
+            return (TAG + TBG) / (TAG + TBG + RAL)
+
+    def _buy_belief(self, bid):
+        """Compute the buyer's belief that an bid will be accepted."""
+        if bid <= self.model.outstanding_bid:
+            return 0
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        bids = history.get_bids()
+        accepted_asks = history.get_accepted_asks()
+        accepted_bids = history.get_accepted_bids()
+
+        TBL = num_leq(accepted_bids, bid)
+        TAL = num_leq(accepted_asks, bid)
+        RBG = num_geq(bids, bid) - num_geq(accepted_bids, bid)
+
+        if TBL + TAL == 0:
+            return self.eta
+        else:
+            return (TBL + TAL) / (TBL + TAL + RBG)
+
+    def _sell_surplus_maximizer(self, prices):
+        """Given a list of prices, find the price that maximizes \
+        the seller's expected surplus."""
+        def exp_surplus(price):
+            return (price - self.value) * self._sell_belief(price)
+
+        exp_surpluses = [exp_surplus(price) for price in prices]
+        print("Belief:", [self._sell_belief(p) for p in prices])
+        print("ES:", exp_surpluses)
+        max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
+        return max_index
+
+    def _buy_surplus_maximizer(self, prices):
+        """Given a list of prices, find the price that maximizes \
+        the buyer's expected surplus."""
+        def exp_surplus(price):
+            return (self.value - price) * self._buy_belief(price)
+
+        exp_surpluses = [exp_surplus(price) for price in prices]
+        print("Belief:", [self._buy_belief(p) for p in prices])
+        print("ES:", exp_surpluses)
+        #@@@
+        # If there are multiple instances of the maximum,
+        # get the highest price with the maximum.
+        max_index, max_es = max(reversed(list(enumerate(exp_surpluses))),
+                                key=lambda p: p[1])
+        return max_index
+
+    def _sell_strategy(self):
+        """Randomize the expected surplus maximizing price \
+        and submit it an ask."""
+        print("seller:", self.unique_id, "value:", self.value)
+        if round(self.value, 2) >= self.model.outstanding_ask:
+            self.do_nothing()
+            print()
+            return
+
+        if self.model.num_traded == 0:
+            # If no trade has occurred, be a smarter ZI.
+            a = self.value
+            b = min(self.model.outstanding_ask, self.highest_ask)
+        else:
+            prices = self.model.history.get_prices()
+
+            if self.lowest_bid not in prices:
+                prices.append(self.lowest_bid)
+            if self.highest_ask not in prices:
+                prices.append(self.highest_ask)
+
+            prices.sort()
+            print("prices:", prices)
+            max_index = self._sell_surplus_maximizer(prices)
+            max_price = prices[max_index]
+            print("max:", max_price)
+
+            if max_index == 0:
+                smallest_gap = prices[max_index + 1] - max_price
+            elif max_index == len(prices) - 1:
+                smallest_gap = max_price - prices[max_index - 1]
+            else:
+                smallest_gap = min(max_price - prices[max_index - 1],
+                                   prices[max_index + 1] - max_price)
+            # max_price - smallest_gap results in the outstanding ask
+            # if eta is given for ask >= oa
+            b = min(max_price + smallest_gap, self.model.outstanding_ask - 0.01)
+            a = max(b - 2 * smallest_gap, self.value)
+
+        print("OA:", self.model.outstanding_ask)
+        print("(a, b):", (a, b))
+        self.model.unif = (a, b)
+        planned_ask = uniform_dollar(a, b)
+        print("Ask:", planned_ask)
+        print()
+        self.ask(planned_ask)
+
+    def _buy_strategy(self):
+        """Randomize the expected surplus maximizing price \
+        and submit it a bid."""
+        print("buyer:", self.unique_id, "value:", self.value)
+        if round(self.value, 2) <= self.model.outstanding_bid:
+            self.do_nothing()
+            print()
+            return
+
+        if self.model.num_traded == 0:
+            # If no trade has occurred, be a smarter ZI.
+            a = max(0, self.model.outstanding_bid)
+            b = self.value
+        else:
+            prices = self.model.history.get_prices()
+
+            if self.lowest_bid not in prices:
+                prices.append(self.lowest_bid)
+            if self.highest_ask not in prices:
+                prices.append(self.highest_ask)
+
+            prices.sort()
+            print("prices:", prices)
+            max_index = self._buy_surplus_maximizer(prices)
+            max_price = prices[max_index]
+            print("max:", max_price)
+
+            if max_index == 0:
+                smallest_gap = prices[max_index + 1] - max_price
+            elif max_index == len(prices) - 1:
+                smallest_gap = max_price - prices[max_index - 1]
+            else:
+                smallest_gap = min(max_price - prices[max_index - 1],
+                                   prices[max_index + 1] - max_price)
+            # max_price - smallest_gap results in the outstanding ask
+            # if eta is given for ask >= oa
+            a = max(max_price - smallest_gap, self.model.outstanding_bid + 0.01)
+            b = min(a + 2 * smallest_gap, self.value) #@@@
+
+        print("OB:", self.model.outstanding_bid)
+        print("(a, b):", (a, b))
+        self.model.unif = (a, b)
+        planned_bid = uniform_dollar(a, b)
+        print("Bid:", planned_bid)
+        print()
+        self.bid(planned_bid)
+
 # ------------------------------ CDA ------------------------------
 
 # exclude outstanding spread?
-class Order_history(list):
-    def get_orders(self, length=None):
-        """Get a list of orders with memory length L"""
-
-
-    def get_prices(self, length=None):
-        asks = self.get_asks(length)  # without outstanding ask
-        bids = self.get_bids(length)  # without outstanding bid
-        prices = list(set(asks + bids))
-        return prices
-
-    def get_asks(self, length=None):
-        # an ask can be accepted ask. Double counted?
-        asks_and_accepts = [order for order in self if order.type == "Ask"
-                            or order.type == "Accept Ask"]
-        try:
-            if asks_and_accepts[-1].type == "Accept Ask":
-                # Was the recent ask accepted? Then, there is no outstanding ask.
-                return [order.price for order in self if order.type == "Ask"]
-            else:
-                # There is an outstanding ask, so remove it.
-                return [order.price for order in self if order.type == "Ask"][:-1]
-        except IndexError:
-            return []
-
-    def get_bids(self, length=None):
-        bids_and_accepts = [order for order in self if order.type == "Bid"
-                            or order.type == "Accept Bid"]
-        try:
-            if bids_and_accepts[-1].type == "Accept Bid":
-                return [order.price for order in self if order.type == "Bid"]
-            else:
-                return [order.price for order in self if order.type == "Bid"][:-1]
-        except IndexError:
-            return []
-
-    def get_accepted_asks(self, length=None):
-        accepted_asks = [order.price for order in self
-                         if order.type == "Accept Ask"]
-        return accepted_asks
-
-    def get_accepted_bids(self, length=None):
-        accepted_bids = [order.price for order in self
-                         if order.type == "Accept Bid"]
-        return accepted_bids
-
-
 class Order_history:
     def __init__(self):
         self.orders = list()
@@ -379,6 +514,7 @@ class Order_history:
     def get_last_action(self):
         return self.actions[-1]
 
+
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
     def __init__(self, supply, demand):
@@ -391,6 +527,7 @@ class CDAmodel(Model):
         self.market_price = None
         self.history = Order_history()
         self.num_traded = 0
+        self.period = 0
         # history records an order as a bid or ask only if it updates
         # the spread
 
@@ -399,13 +536,13 @@ class CDAmodel(Model):
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                ZIP(i, self, "buyer", value, demand.q_per_agent)
+                GDtest(i, self, "buyer", value, demand.q_per_agent)
             )
 
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                ZIP(j, self, "seller", cost, supply.q_per_agent)
+                GDtest(j, self, "seller", cost, supply.q_per_agent)
             )
 
         # Collecting data
@@ -481,7 +618,9 @@ class CDAmodel(Model):
     def step(self):
         if self.traded == 1:
             self.initialize_spread()
+        print("step:", self.period)
         self.schedule.step()
+        self.period += 1
         self.datacollector.collect(self)
 
     def plot_model(self):
@@ -505,11 +644,11 @@ supply = Supply(6, 5, 3, 75, 200, 1)
 demand = Demand(6, 5, 3, 325, 200, 1)
 
 # GD
-supply = Supply(7, 5, 5, 1.45, 2.50, 1)
-demand = Demand(7, 5, 5, 3.55, 2.50, 1)
+supply = Supply(6, 5, 2, 1.45, 2.50, 1)
+demand = Demand(6, 5, 2, 3.55, 2.50, 1)
 
 model = CDAmodel(supply, demand)
-for i in range(1000):
+for i in range(200):
     model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
