@@ -46,7 +46,7 @@ def compute_efficiency(model):
     # in contrast to the theoretical maximum surplus.
     producer_surplus = model.supply.theoretical_surplus
     consumer_surplus = model.demand.theoretical_surplus
-    total_surplus = producer_surplus + consumer_surplus
+    total_surplus = (producer_surplus + consumer_surplus) * model.num_period
     actual_surplus = np.sum(np.fromiter(
         (agent.surplus for agent in model.schedule.agents), float
     ))
@@ -69,9 +69,9 @@ class GD(Trader):
     def __init__(self, unique_id, model, role, value, q):
         super().__init__(unique_id, model, role, value, q)
         self.eta = 0.001
-        self.highest_ask = 10.0
+        self.highest_ask = 100.0
         self.lowest_bid = 0.0
-        self.mem_length = 3
+        self.mem_length = None
 
     def _sell_belief(self, ask):
         """Compute the seller's belief that an ask will be accepted."""
@@ -130,8 +130,8 @@ class GD(Trader):
             return (price - self.value) * self._sell_belief(price)
 
         exp_surpluses = [exp_surplus(price) for price in prices]
-        print("Belief:", [self._sell_belief(p) for p in prices])
-        print("ES:", exp_surpluses)
+        # print("Belief:", [self._sell_belief(p) for p in prices])
+        # print("ES:", exp_surpluses)
         max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
         return max_index
 
@@ -142,9 +142,8 @@ class GD(Trader):
             return (self.value - price) * self._buy_belief(price)
 
         exp_surpluses = [exp_surplus(price) for price in prices]
-        print("Belief:", [self._buy_belief(p) for p in prices])
-        print("ES:", exp_surpluses)
-        #@@@
+        # print("Belief:", [self._buy_belief(p) for p in prices])
+        # print("ES:", exp_surpluses)
         # If there are multiple instances of the maximum,
         # get the highest price with the maximum.
         max_index, max_es = max(reversed(list(enumerate(exp_surpluses))),
@@ -154,10 +153,10 @@ class GD(Trader):
     def _sell_strategy(self):
         """Randomize the expected surplus maximizing price \
         and submit it an ask."""
-        print("seller:", self.unique_id, "value:", self.value)
+        # print("seller:", self.unique_id, "value:", self.value)
         if round(self.value, 2) >= self.model.outstanding_ask:
             self.do_nothing()
-            print()
+            # print()
             return
 
         if self.model.num_traded == 0:
@@ -173,10 +172,10 @@ class GD(Trader):
                 prices.append(self.highest_ask)
 
             prices.sort()
-            print("prices:", prices)
+            # print("prices:", prices)
             max_index = self._sell_surplus_maximizer(prices)
             max_price = prices[max_index]
-            print("max:", max_price)
+            # print("max:", max_price)
 
             if max_index == 0:
                 smallest_gap = prices[max_index + 1] - max_price
@@ -190,21 +189,21 @@ class GD(Trader):
             b = min(max_price + smallest_gap, self.model.outstanding_ask - 0.01)
             a = max(b - 2 * smallest_gap, self.value)
 
-        print("OA:", self.model.outstanding_ask)
-        print("(a, b):", (a, b))
+        # print("OA:", self.model.outstanding_ask)
+        # print("(a, b):", (a, b))
         self.model.unif = (a, b)
         planned_ask = uniform_dollar(a, b)
-        print("Ask:", planned_ask)
-        print()
+        # print("Ask:", planned_ask)
+        # print()
         self.ask(planned_ask)
 
     def _buy_strategy(self):
         """Randomize the expected surplus maximizing price \
         and submit it a bid."""
-        print("buyer:", self.unique_id, "value:", self.value)
+        # print("buyer:", self.unique_id, "value:", self.value)
         if round(self.value, 2) <= self.model.outstanding_bid:
             self.do_nothing()
-            print()
+            # print()
             return
 
         if self.model.num_traded == 0:
@@ -220,10 +219,10 @@ class GD(Trader):
                 prices.append(self.highest_ask)
 
             prices.sort()
-            print("prices:", prices)
+            # print("prices:", prices)
             max_index = self._buy_surplus_maximizer(prices)
             max_price = prices[max_index]
-            print("max:", max_price)
+            # print("max:", max_price)
 
             if max_index == 0:
                 smallest_gap = prices[max_index + 1] - max_price
@@ -237,12 +236,12 @@ class GD(Trader):
             a = max(max_price - smallest_gap, self.model.outstanding_bid + 0.01)
             b = min(a + 2 * smallest_gap, self.value) #@@@
 
-        print("OB:", self.model.outstanding_bid)
-        print("(a, b):", (a, b))
+        # print("OB:", self.model.outstanding_bid)
+        # print("(a, b):", (a, b))
         self.model.unif = (a, b)
         planned_bid = uniform_dollar(a, b)
-        print("Bid:", planned_bid)
-        print()
+        # print("Bid:", planned_bid)
+        # print()
         self.bid(planned_bid)
 
 # ------------------------------ CDA ------------------------------
@@ -377,22 +376,25 @@ class CDAmodel(Model):
         self.market_price = None
         self.history = Order_history()
         self.num_traded = 0
-        self.period = 0
+        self.num_step = 0
         # history records an order as a bid or ask only if it updates
         # the spread
+
+        self.num_period = 1
+        self.loc_period = [0]  # where each period happens
 
         # How agents are activated at each step
         self.schedule = RandomChoiceActivation(self)
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                GDtest(i, self, "buyer", value, demand.q_per_agent)
+                GD(i, self, "buyer", value, demand.q_per_agent)
             )
 
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                GDtest(j, self, "seller", cost, supply.q_per_agent)
+                GD(j, self, "seller", cost, supply.q_per_agent)
             )
 
         # Collecting data
@@ -465,12 +467,27 @@ class CDAmodel(Model):
         self.traded = 1
         self.num_traded += 1
 
+    def next_period(self):
+        # Make sure the schedule is in the same order as it was initialized.
+        model.schedule.agents.sort(key=lambda x: x.unique_id)
+        for i, _ in enumerate(self.demand.price_schedule):
+            self.schedule.agents[i].right = self.demand.q_per_agent
+            self.schedule.agents[i].active = True
+
+        for i, _ in enumerate(self.demand.price_schedule):
+            j = self.num_buyers + i
+            self.schedule.agents[j].good = self.supply.q_per_agent
+            self.schedule.agents[j].active = True
+
+        self.num_period += 1
+        self.loc_period.append(self.num_step)
+
     def step(self):
         if self.traded == 1:
             self.initialize_spread()
-        print("step:", self.period)
+        # print("step:", self.num_step)
         self.schedule.step()
-        self.period += 1
+        self.num_step += 1
         self.datacollector.collect(self)
 
     def plot_model(self):
@@ -485,6 +502,11 @@ class CDAmodel(Model):
                     )
         plt.text(0.8, 0.9, round(compute_efficiency(self), 3), fontsize=20,
                  transform=ax.transAxes)
+        for i in range(self.num_period):
+            plt.axvline(x=self.loc_period[i],
+                        color='black',
+                        linestyle='dashed'
+            )
         plt.show()
 
 # ------------------------------ Logger ----------------------------------
@@ -498,16 +520,26 @@ class CDAmodel(Model):
 # ------------------------------ Simulation ------------------------------
 
 # ZIP
-supply = Supply(6, 5, 3, 75, 200, 1)
-demand = Demand(6, 5, 3, 325, 200, 1)
+supply = Supply(6, 5, 1, 75, 200, 1)
+demand = Demand(6, 5, 1, 325, 200, 1)
 
 # GD
-supply = Supply(6, 5, 2, 1.45, 2.50, 1)
-demand = Demand(6, 5, 2, 3.55, 2.50, 1)
+supply = Supply(6, 5, 1, 1.45, 2.50, 1)
+demand = Demand(6, 5, 1, 3.55, 2.50, 1)
+
+# test
+supply = Supply(6, 5, 1, 14.50, 25.00, 1)
+demand = Demand(6, 5, 1, 35.50, 25.00, 1)
 
 model = CDAmodel(supply, demand)
+
 for i in range(200):
     model.step()
+
+for j in range(9):
+    model.next_period()
+    for i in range(200):
+        model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()
 data_traded_model = data_model[data_model.Traded == 1]

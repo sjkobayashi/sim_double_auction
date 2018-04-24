@@ -40,7 +40,6 @@ class Trader(Agent):
 
     def buy(self, price):
         """Buy a good from someone"""
-        self.good += 1
         self.right -= 1
         self.surplus += self.value - price
         if self.right == 0:
@@ -50,7 +49,6 @@ class Trader(Agent):
     def sell(self, price):
         """Sell a good to someone"""
         self.good -= 1
-        self.right += 1
         self.surplus += price - self.value
         if self.good == 0:
             # if seller's units become zero, it deactivates.
