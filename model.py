@@ -52,6 +52,84 @@ def compute_efficiency(model):
     ))
     return actual_surplus / total_surplus
 
+# ---------------------------------------------------------------
+
+
+class MGD(GD):
+    def _sell_belief(self, ask):
+        """Compute the seller's belief that an ask will be accepted."""
+        if ask >= self.model.outstanding_ask:
+            return 0
+
+        try:
+            if ask >= self.model.history.max_last_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        try:
+            if ask >= self.model.history.max_current_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        asks = history.get_asks(length=self.mem_length)
+        accepted_asks = history.get_accepted_asks(length=self.mem_length)
+        accepted_bids = history.get_accepted_bids(length=self.mem_length)
+
+        TAG = num_geq(accepted_asks, ask)
+        TBG = num_geq(accepted_bids, ask)
+        RAL = num_leq(asks, ask) - num_leq(accepted_asks, ask)
+
+        if TAG + TBG == 0:
+            return self.eta
+        else:
+            return (TAG + TBG) / (TAG + TBG + RAL)
+
+    def _buy_belief(self, bid):
+        """Compute the buyer's belief that an bid will be accepted."""
+        if bid <= self.model.outstanding_bid:
+            return 0
+
+        try:
+            if bid <= self.model.history.min_last_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        try:
+            if bid <= self.model.history.min_current_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        bids = history.get_bids(length=self.mem_length)
+        accepted_asks = history.get_accepted_asks(length=self.mem_length)
+        accepted_bids = history.get_accepted_bids(length=self.mem_length)
+
+        TBL = num_leq(accepted_bids, bid)
+        TAL = num_leq(accepted_asks, bid)
+        RBG = num_geq(bids, bid) - num_geq(accepted_bids, bid)
+
+        if TBL + TAL == 0:
+            return self.eta
+        else:
+            return (TBL + TAL) / (TBL + TAL + RBG)
+
 
 # ------------------------------ CDA ------------------------------
 
@@ -64,6 +142,12 @@ class Order_history:
         self.oa_index = None
         self.ob_index = None
         self.trade_indices = list()
+
+        self.starting_step = 0
+        self.max_last_period = None
+        self.min_last_period = None
+        self.max_current_period = None
+        self.min_current_period = None
 
     def submit_ask(self, asker, price):
         order = Order(type='Ask',
@@ -98,6 +182,8 @@ class Order_history:
 
         self.actions.append(order)
 
+        self.update_min_max_current(price)
+
     def accept_ask(self, bidder, asker, price):
         order = Order(type='Accept Bid',
                       price=price,
@@ -110,6 +196,8 @@ class Order_history:
         self.ob_index = None
 
         self.actions.append(order)
+
+        self.update_min_max_current(price)
 
     def submit_null(self, bidder, asker, price):
         """Used for tracking all actions."""
@@ -130,6 +218,28 @@ class Order_history:
                   asker=a_id)
         )
 
+    def next_period(self):
+        prices_this_period = [order.price for order in
+                              self.orders[self.starting_step:]
+                              if order.type == "Accept Ask" or
+                              order.type == "Accept Bid"]
+        self.max_last_period = max(prices_this_period)
+        self.min_last_period = min(prices_this_period)
+        self.starting_step = len(self.orders)
+        self.max_current_period = None
+        self.min_current_period = None
+
+    def update_min_max_current(self, price):
+        if self.max_current_period is None:
+            self.max_current_period = price
+        elif self.max_current_period < price:
+            self.max_current_period = price
+
+        if self.min_current_period is None:
+            self.min_current_period = price
+        elif self.min_current_period > price:
+            self.min_current_period = price
+
     def get_non_outstanding_orders(self, length=None):
         """Return non-outstanding orders."""
         non_outst_orders = [order for i, order in enumerate(self.orders)
@@ -144,6 +254,16 @@ class Order_history:
     def get_prices(self, length=None):
         past_orders = self.get_non_outstanding_orders(length)
         return list({order.price for order in past_orders})
+
+    def get_prices_above(self, value, length=None):
+        past_orders = self.get_non_outstanding_orders(length)
+        return list({order.price for order in past_orders
+                     if order.price >= value})
+
+    def get_prices_below(self, value, length=None):
+        past_orders = self.get_non_outstanding_orders(length)
+        return list({order.price for order in past_orders
+                     if order.price <= value})
 
     def get_asks(self, length=None):
         past_orders = self.get_non_outstanding_orders(length)
@@ -196,13 +316,13 @@ class CDAmodel(Model):
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                ZIP(i, self, "buyer", value, demand.q_per_agent)
+                MGD(i, self, "buyer", value, demand.q_per_agent)
             )
 
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                ZIP(j, self, "seller", cost, supply.q_per_agent)
+                MGD(j, self, "seller", cost, supply.q_per_agent)
             )
 
         # Collecting data
@@ -291,6 +411,7 @@ class CDAmodel(Model):
 
         self.num_period += 1
         self.loc_period.append(self.num_step)
+        self.history.next_period()
 
     def step(self):
         if self.traded == 1:
@@ -343,12 +464,12 @@ demand = Demand(6, 5, 1, 35.50, 25.00, 1)
 
 model = CDAmodel(supply, demand)
 
-for i in range(500):
+for i in range(300):
     model.step()
 
 for j in range(9):
     model.next_period()
-    for i in range(500):
+    for i in range(300):
         model.step()
 
 data_model = model.datacollector.get_model_vars_dataframe()

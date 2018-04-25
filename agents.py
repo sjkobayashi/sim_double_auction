@@ -305,10 +305,15 @@ class GD(Trader):
         def exp_surplus(price):
             return (price - self.value) * self._sell_belief(price)
 
-        exp_surpluses = [exp_surplus(price) for price in prices]
+        # @@@
+        # exclude prices that would result in negative surpluses
+        profitable_prices = [(i, price) for i, price in enumerate(prices)
+                             if price >= self.value]
+        exp_surpluses = [(i, exp_surplus(price)) for i, price in
+                         profitable_prices]
         # print("Belief:", [self._sell_belief(p) for p in prices])
         # print("ES:", exp_surpluses)
-        max_index, max_es = max(enumerate(exp_surpluses), key=lambda p: p[1])
+        max_index, max_es = max(exp_surpluses, key=lambda p: p[1])
         return max_index
 
     def _buy_surplus_maximizer(self, prices):
@@ -317,12 +322,17 @@ class GD(Trader):
         def exp_surplus(price):
             return (self.value - price) * self._buy_belief(price)
 
-        exp_surpluses = [exp_surplus(price) for price in prices]
+        # @@@
+        # exclude prices that would result in negative surpluses
+        profitable_prices = [(i, price) for i, price in enumerate(prices)
+                             if price <= self.value]
+        exp_surpluses = [(i, exp_surplus(price)) for i, price in
+                         profitable_prices]
         # print("Belief:", [self._buy_belief(p) for p in prices])
         # print("ES:", exp_surpluses)
         # If there are multiple instances of the maximum,
         # get the highest price with the maximum.
-        max_index, max_es = max(reversed(list(enumerate(exp_surpluses))),
+        max_index, max_es = max(reversed(exp_surpluses),
                                 key=lambda p: p[1])
         return max_index
 
