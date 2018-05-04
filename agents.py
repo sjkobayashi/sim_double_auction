@@ -12,16 +12,23 @@ def uniform_dollar(a, b):
     A = int(round(a, 2) * 100)
     B = int(round(b, 2) * 100)
     interval = np.arange(A, B + 1)
-    x = random.choice(interval)
+    try:
+        x = random.choice(interval)
+    except IndexError:
+        raise IndexError("Cannot choose from " + str((a, b)))
     return x / 100
 
 
 class Trader(Agent):
     """A base class for traders"""
-    def __init__(self, unique_id, model, role, value, q):
+    def __init__(self, unique_id, model, role, value, q,
+                 highest_ask=100, lowest_bid=0):
         super().__init__(unique_id, model)
         self.role = role  # buyer or seller
         self.value = value  # value or cost
+
+        self.highest_ask = highest_ask
+        self.lowest_bid = lowest_bid
 
         if role == "seller":
             self.good = q  # good owned
@@ -96,19 +103,20 @@ class ZI(Trader):
     def _sell_strategy(self):
         """Strategy for selling. Pick a value from uniform discrete \
         distribution (v_i, 200)."""
-        price = random.randint(self.value, 200)
+        price = np.random.uniform(self.value, self.highest_ask)
         self.ask(price)
 
     def _buy_strategy(self):
         """Strategy for buying. Pick a value from uniform discrete \
         distribution (0, v_i)."""
-        price = random.randint(1, self.value)
+        price = np.random.uniform(self.lowest_bid, self.value)
         self.bid(price)
 
 
 class ZIP(Trader):
     """Zero-Intelligence-Plus strategy from Cliff (1997)."""
-    def __init__(self, unique_id, model, role, value, q):
+    def __init__(self, unique_id, model, role, value, q,
+                 highest_ask, lowest_ask):
         super().__init__(unique_id, model, role, value, q)
 
         self.beta = np.random.uniform(0.1, 0.5)
@@ -208,8 +216,7 @@ class ZIP(Trader):
         if next_shout >= self.value:
             self.planned_shout.append(next_shout)
             new_margin = next_shout / self.value - 1
-            if new_margin > 0.0:
-                self.margins.append(new_margin)
+            self.margins.append(new_margin)
 
     def _buy_update_margin(self):
         """Update the margin and planned bid."""
@@ -222,8 +229,7 @@ class ZIP(Trader):
         if next_shout <= self.value:
             self.planned_shout.append(next_shout)
             new_margin = next_shout / self.value - 1
-            if new_margin < 0.0:
-                self.margins.append(new_margin)
+            self.margins.append(new_margin)
 
     def increase_target(self, last_price):
         """Compute the target for increasing the planned ask."""
@@ -240,13 +246,77 @@ class ZIP(Trader):
         self.target.append(new_target)
 
 
+class MZIP(ZIP):
+    """Response functions adopted from Cliff's BSE."""
+    def _sell_response(self):
+        """Observe the last shout and change the planned ask."""
+        last_order = self.model.history.get_last_action()
+        if (last_order.type == 'Accept Bid' or
+                last_order.type == 'Accept Ask'):
+            if self.planned_shout[-1] <= last_order.price:
+                # transaction price is higher than what I planned
+                # increase the margin
+                self.increase_target(last_order.price)
+                self._sell_update_margin()
+            else:
+                if (last_order.type == 'Accept Ask' and
+                        self.active):
+                    # bid was accepted with a smaller price than my planned ask
+                    # decrease the margin
+                    self.decrease_target(last_order.price)
+                    self._sell_update_margin()
+        else:
+            # no transaction
+            # This response is from BSE.
+            if (last_order.type == 'Ask' and
+                    self.planned_shout[-1] > last_order.price):
+                # ask has a smaller price than my planned ask
+                if self.model.outstanding_bid > 0:
+                    # decrease the margin by targeting the outstanding bid
+                    self.increase_target(self.model.outstanding_bid)
+                else:
+                    # outstanding bid does not exist.
+                    # let's slow down
+                    self.target.append(self.highest_ask)
+                self._sell_update_margin()
+
+    def _buy_response(self):
+        """Observe the last shout and change the planned bid."""
+        last_order = self.model.history.get_last_action()
+        if (last_order.type == 'Accept Bid' or
+                last_order.type == 'Accept Ask'):
+            if self.planned_shout[-1] >= last_order.price:
+                # transaction price is smaller than what I planned
+                # increase the margin
+                self.decrease_target(last_order.price)
+                self._buy_update_margin()
+            else:
+                if (last_order.type == 'Accept Bid' and
+                        self.active):
+                    # bid was accepted with a higher price than my planned bid
+                    # decrease the margin
+                    self.increase_target(last_order.price)
+                    self._buy_update_margin()
+        else:
+            # no transaction
+            if (last_order.type == 'Bid' and
+                    self.planned_shout[-1] < last_order.price):
+                # bid has a higher price than my planned bid
+                if self.model.outstanding_ask < float('Inf'):
+                    # decrease the margin by targeting the outstanding ask
+                    self.decrease_target(self.model.outstanding_ask)
+                else:
+                    self.target.append(self.lowest_bid)
+                self._buy_update_margin()
+
+
 class GD(Trader):
     """Gjerstad-Dickhaut strategy from Gjerstad and Dickhaut (1998)"""
-    def __init__(self, unique_id, model, role, value, q):
-        super().__init__(unique_id, model, role, value, q)
+    def __init__(self, unique_id, model, role, value, q,
+                 highest_ask=100, lowest_bid=0):
+        super().__init__(unique_id, model, role, value, q,
+                         highest_ask, lowest_bid)
         self.eta = 0.001
-        self.highest_ask = 100.0
-        self.lowest_bid = 0.0
         self.mem_length = None
 
     def _sell_belief(self, ask):
@@ -311,8 +381,8 @@ class GD(Trader):
                              if price >= self.value]
         exp_surpluses = [(i, exp_surplus(price)) for i, price in
                          profitable_prices]
-        # print("Belief:", [self._sell_belief(p) for p in prices])
-        # print("ES:", exp_surpluses)
+        #print("Belief:", [self._sell_belief(p) for p in prices])
+        #print("ES:", exp_surpluses)
         max_index, max_es = max(exp_surpluses, key=lambda p: p[1])
         return max_index
 
@@ -328,8 +398,8 @@ class GD(Trader):
                              if price <= self.value]
         exp_surpluses = [(i, exp_surplus(price)) for i, price in
                          profitable_prices]
-        # print("Belief:", [self._buy_belief(p) for p in prices])
-        # print("ES:", exp_surpluses)
+        #print("Belief:", [self._buy_belief(p) for p in prices])
+        #print("ES:", exp_surpluses)
         # If there are multiple instances of the maximum,
         # get the highest price with the maximum.
         max_index, max_es = max(reversed(exp_surpluses),
@@ -339,10 +409,10 @@ class GD(Trader):
     def _sell_strategy(self):
         """Randomize the expected surplus maximizing price \
         and submit it an ask."""
-        # print("seller:", self.unique_id, "value:", self.value)
+        #print("seller:", self.unique_id, "value:", self.value)
         if round(self.value, 2) >= self.model.outstanding_ask:
             self.do_nothing()
-            # print()
+            #print()
             return
 
         if self.model.num_traded == 0:
@@ -358,10 +428,10 @@ class GD(Trader):
                 prices.append(self.highest_ask)
 
             prices.sort()
-            # print("prices:", prices)
+            #print("prices:", prices)
             max_index = self._sell_surplus_maximizer(prices)
             max_price = prices[max_index]
-            # print("max:", max_price)
+            #print("max:", max_price)
 
             if max_index == 0:
                 smallest_gap = prices[max_index + 1] - max_price
@@ -375,11 +445,11 @@ class GD(Trader):
             b = min(max_price + smallest_gap, self.model.outstanding_ask - 0.01)
             a = max(b - 2 * smallest_gap, self.value)  # @@@
 
-        # print("OA:", self.model.outstanding_ask)
-        # print("(a, b):", (a, b))
+        #print("OA:", self.model.outstanding_ask)
+        #print("(a, b):", (a, b))
         planned_ask = uniform_dollar(a, b)
-        # print("Ask:", planned_ask)
-        # print()
+        #print("Ask:", planned_ask)
+        #print()
         self.ask(planned_ask)
 
     def _buy_strategy(self):
@@ -388,7 +458,7 @@ class GD(Trader):
         # print("buyer:", self.unique_id, "value:", self.value)
         if round(self.value, 2) <= self.model.outstanding_bid:
             self.do_nothing()
-            # print()
+            #print()
             return
 
         if self.model.num_traded == 0:
@@ -404,10 +474,10 @@ class GD(Trader):
                 prices.append(self.highest_ask)
 
             prices.sort()
-            # print("prices:", prices)
+            #print("prices:", prices)
             max_index = self._buy_surplus_maximizer(prices)
             max_price = prices[max_index]
-            # print("max:", max_price)
+            #print("max:", max_price)
 
             if max_index == 0:
                 smallest_gap = prices[max_index + 1] - max_price
@@ -421,9 +491,89 @@ class GD(Trader):
             a = max(max_price - smallest_gap, self.model.outstanding_bid + 0.01)
             b = min(a + 2 * smallest_gap, self.value) #@@@
 
-        # print("OB:", self.model.outstanding_bid)
-        # print("(a, b):", (a, b))
+        #print("OB:", self.model.outstanding_bid)
+        #print("(a, b):", (a, b))
         planned_bid = uniform_dollar(a, b)
-        # print("Bid:", planned_bid)
-        # print()
+        #print("Bid:", planned_bid)
+        #print()
         self.bid(planned_bid)
+
+
+class MGD(GD):
+    """Modified Gjerstad-Dickhaut strategy. Now the belief
+    is zeroed when the price is above the highest price or
+    below the lowest price in the previous period or current
+    period."""
+    def _sell_belief(self, ask):
+        """Compute the seller's belief that an ask will be accepted."""
+        if ask >= self.model.outstanding_ask:
+            return 0
+
+        try:
+            if ask >= self.model.history.max_last_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        try:
+            if ask >= self.model.history.max_current_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        asks = history.get_asks(length=self.mem_length)
+        accepted_asks = history.get_accepted_asks(length=self.mem_length)
+        accepted_bids = history.get_accepted_bids(length=self.mem_length)
+
+        TAG = num_geq(accepted_asks, ask)
+        TBG = num_geq(accepted_bids, ask)
+        RAL = num_leq(asks, ask) - num_leq(accepted_asks, ask)
+
+        if TAG + TBG == 0:
+            return self.eta
+        else:
+            return (TAG + TBG) / (TAG + TBG + RAL)
+
+    def _buy_belief(self, bid):
+        """Compute the buyer's belief that an bid will be accepted."""
+        if bid <= self.model.outstanding_bid:
+            return 0
+
+        try:
+            if bid <= self.model.history.min_last_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        try:
+            if bid <= self.model.history.min_current_period:
+                return self.eta
+        except TypeError:
+            pass
+
+        def num_geq(history, price):
+            return len([d for d in history if d >= price])
+
+        def num_leq(history, price):
+            return len([d for d in history if d <= price])
+
+        history = self.model.history
+        bids = history.get_bids(length=self.mem_length)
+        accepted_asks = history.get_accepted_asks(length=self.mem_length)
+        accepted_bids = history.get_accepted_bids(length=self.mem_length)
+
+        TBL = num_leq(accepted_bids, bid)
+        TAL = num_leq(accepted_asks, bid)
+        RBG = num_geq(bids, bid) - num_geq(accepted_bids, bid)
+
+        if TBL + TAL == 0:
+            return self.eta
+        else:
+            return (TBL + TAL) / (TBL + TAL + RBG)

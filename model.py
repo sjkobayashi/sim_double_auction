@@ -1,6 +1,7 @@
 import random
 import math
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from mesa import Model
 from mesa.time import BaseScheduler
@@ -15,6 +16,8 @@ class RandomChoiceActivation(BaseScheduler):
     """A scheduler which activates a randomly picked agent once per step."""
     def step(self):
         agent = random.choice(self.agents)
+        while not agent.active:
+            agent = random.choice(self.agents)
         agent.step()
         self.steps += 1
         self.time += 1
@@ -41,94 +44,21 @@ def get_asker_id(model):
         return -1
 
 
+def compute_actual_surplus(model):
+    actual_surplus = np.sum(np.fromiter(
+        (agent.surplus for agent in model.schedule.agents), float
+    ))
+    return actual_surplus
+
+
 def compute_efficiency(model):
     # Compute the efficiency of traders' surplus
     # in contrast to the theoretical maximum surplus.
     producer_surplus = model.supply.theoretical_surplus
     consumer_surplus = model.demand.theoretical_surplus
     total_surplus = (producer_surplus + consumer_surplus) * model.num_period
-    actual_surplus = np.sum(np.fromiter(
-        (agent.surplus for agent in model.schedule.agents), float
-    ))
+    actual_surplus = compute_actual_surplus(model)
     return actual_surplus / total_surplus
-
-# ---------------------------------------------------------------
-
-
-class MGD(GD):
-    def _sell_belief(self, ask):
-        """Compute the seller's belief that an ask will be accepted."""
-        if ask >= self.model.outstanding_ask:
-            return 0
-
-        try:
-            if ask >= self.model.history.max_last_period:
-                return self.eta
-        except TypeError:
-            pass
-
-        try:
-            if ask >= self.model.history.max_current_period:
-                return self.eta
-        except TypeError:
-            pass
-
-        def num_geq(history, price):
-            return len([d for d in history if d >= price])
-
-        def num_leq(history, price):
-            return len([d for d in history if d <= price])
-
-        history = self.model.history
-        asks = history.get_asks(length=self.mem_length)
-        accepted_asks = history.get_accepted_asks(length=self.mem_length)
-        accepted_bids = history.get_accepted_bids(length=self.mem_length)
-
-        TAG = num_geq(accepted_asks, ask)
-        TBG = num_geq(accepted_bids, ask)
-        RAL = num_leq(asks, ask) - num_leq(accepted_asks, ask)
-
-        if TAG + TBG == 0:
-            return self.eta
-        else:
-            return (TAG + TBG) / (TAG + TBG + RAL)
-
-    def _buy_belief(self, bid):
-        """Compute the buyer's belief that an bid will be accepted."""
-        if bid <= self.model.outstanding_bid:
-            return 0
-
-        try:
-            if bid <= self.model.history.min_last_period:
-                return self.eta
-        except TypeError:
-            pass
-
-        try:
-            if bid <= self.model.history.min_current_period:
-                return self.eta
-        except TypeError:
-            pass
-
-        def num_geq(history, price):
-            return len([d for d in history if d >= price])
-
-        def num_leq(history, price):
-            return len([d for d in history if d <= price])
-
-        history = self.model.history
-        bids = history.get_bids(length=self.mem_length)
-        accepted_asks = history.get_accepted_asks(length=self.mem_length)
-        accepted_bids = history.get_accepted_bids(length=self.mem_length)
-
-        TBL = num_leq(accepted_bids, bid)
-        TAL = num_leq(accepted_asks, bid)
-        RBG = num_geq(bids, bid) - num_geq(accepted_bids, bid)
-
-        if TBL + TAL == 0:
-            return self.eta
-        else:
-            return (TBL + TAL) / (TBL + TAL + RBG)
 
 
 # ------------------------------ CDA ------------------------------
@@ -223,8 +153,14 @@ class Order_history:
                               self.orders[self.starting_step:]
                               if order.type == "Accept Ask" or
                               order.type == "Accept Bid"]
-        self.max_last_period = max(prices_this_period)
-        self.min_last_period = min(prices_this_period)
+
+        if len(prices_this_period) <= 1:
+            self.max_last_period = None
+            self.min_last_period = None
+        else:
+            self.max_last_period = max(prices_this_period)
+            self.min_last_period = min(prices_this_period)
+
         self.starting_step = len(self.orders)
         self.max_current_period = None
         self.min_current_period = None
@@ -295,7 +231,8 @@ class Order_history:
 
 class CDAmodel(Model):
     """Continuous Double Auction model with some number of agents."""
-    def __init__(self, supply, demand):
+    def __init__(self, supply, demand, s_strategy, b_strategy,
+                 highest_ask=100, lowest_ask=0):
         self.supply = supply
         self.demand = demand
         self.num_sellers = supply.num_agents
@@ -311,18 +248,24 @@ class CDAmodel(Model):
         self.num_period = 1
         self.loc_period = [0]  # where each period happens
 
+        # Sometimes trade does not happen within a period,
+        # so we need variables to indicate them.
+        self.no_trade = False
+
         # How agents are activated at each step
         self.schedule = RandomChoiceActivation(self)
         # Create agents
         for i, value in enumerate(demand.price_schedule):
             self.schedule.add(
-                MGD(i, self, "buyer", value, demand.q_per_agent)
+                s_strategy(i, self, "buyer", value, demand.q_per_agent,
+                           highest_ask, lowest_ask)
             )
 
         for i, cost in enumerate(supply.price_schedule):
             j = self.num_buyers + i
             self.schedule.add(
-                MGD(j, self, "seller", cost, supply.q_per_agent)
+                b_strategy(j, self, "seller", cost, supply.q_per_agent,
+                           highest_ask, lowest_ask)
             )
 
         # Collecting data
@@ -344,6 +287,28 @@ class CDAmodel(Model):
                              "Right": "right",
                              "Surplus": "surplus"}
         )
+        # self.datacollector = DataCollector(
+        #     model_reporters={"Step": "num_step",
+        #                      "Period": "num_period",
+        #                      "TransNum": "num_traded",
+        #                      "OB": "outstanding_bid",
+        #                      "OA": "outstanding_ask",
+        #                      "MarketPrice": "market_price",
+        #                      "Traded": "traded",
+        #                      "ActualSurplus": compute_actual_surplus,
+        #                      "TheoreticalSurplus": lambda x: (
+        #                          x.supply.theoretical_surplus +
+        #                          x.demand.theoretical_surplus),
+        #                      "Efficiency": compute_efficiency},
+        #     agent_reporters={"Period": lambda x: x.model.num_period,
+        #                      "Type": lambda x: type(x),
+        #                      "Role": "role",
+        #                      "Value": "value",
+        #                      "Good": "good",
+        #                      "Right": "right",
+        #                      "Surplus": "surplus"}
+
+        # )
 
     def initialize_spread(self):
         # Initialize outstanding bid and ask
@@ -399,7 +364,11 @@ class CDAmodel(Model):
 
     def next_period(self):
         # Make sure the schedule is in the same order as it was initialized.
-        model.schedule.agents.sort(key=lambda x: x.unique_id)
+
+        if self.num_traded == 0:
+            self.no_trade = True
+
+        self.schedule.agents.sort(key=lambda x: x.unique_id)
         for i, _ in enumerate(self.demand.price_schedule):
             self.schedule.agents[i].right = self.demand.q_per_agent
             self.schedule.agents[i].active = True
@@ -410,6 +379,7 @@ class CDAmodel(Model):
             self.schedule.agents[j].active = True
 
         self.num_period += 1
+        self.num_traded = 0
         self.loc_period.append(self.num_step)
         self.history.next_period()
 
@@ -448,36 +418,42 @@ class CDAmodel(Model):
 # logger.debug("starting a simulation.")
 
 
-# ------------------------------ Simulation ------------------------------
+# ----------------------------- Sim -----------------------------
 
 # ZIP
-supply = Supply(6, 5, 1, 75, 200, 1)
-demand = Demand(6, 5, 1, 325, 200, 1)
+#supply = Supply(6, 5, 1, 75, 200, 1)
+#demand = Demand(6, 5, 1, 325, 200, 1)
 
 # GD
-supply = Supply(6, 5, 1, 1.45, 2.50, 1)
-demand = Demand(6, 5, 1, 3.55, 2.50, 1)
+#supply = Supply(6, 5, 1, 1.45, 2.50, 1)
+#demand = Demand(6, 5, 1, 3.55, 2.50, 1)
 
 # test
-supply = Supply(6, 5, 1, 14.50, 25.00, 1)
-demand = Demand(6, 5, 1, 35.50, 25.00, 1)
+# supply = Supply(6, 5, 1, 24.00, 25.00, 1)
+# demand = Demand(6, 5, 1, 35.50, 25.00, 1)
 
-model = CDAmodel(supply, demand)
+# num_batches = 0
+# while num_batches <= 9:
+#     print()
+#     print(num_batches)
+#     print()
+#     model = CDAmodel(supply, demand, ZIP, ZIP, 100, 0)
+#     for j in range(10):
+#         print("Period", model.num_period)
+#         for i in range(500):
+#             model.step()
+#         model.next_period()
+#         if model.no_trade:
+#             print("No Trade")
+#             break
+#     else:
+#         num_batches += 1
 
-for i in range(300):
-    model.step()
 
-for j in range(9):
-    model.next_period()
-    for i in range(300):
-        model.step()
 
-data_model = model.datacollector.get_model_vars_dataframe()
-data_traded_model = data_model[data_model.Traded == 1]
-
-data_agent = model.datacollector.get_agent_vars_dataframe()
-
-model.plot_model()
+# data_model = model.datacollector.get_model_vars_dataframe()
+# data_t_model = data_model[data_model.Traded == 1].drop(
+#             columns='Traded')
 
 
 def get_agent(unique_id):
