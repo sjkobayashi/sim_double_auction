@@ -51,12 +51,40 @@ def compute_actual_surplus(model):
     return actual_surplus
 
 
+def compute_theoretical_surplus(model):
+    if model.shifted:
+        return (model.new_supply.theoretical_surplus +
+                model.new_demand.theoretical_surplus)
+    else:
+        return (model.supply.theoretical_surplus +
+                model.demand.theoretical_surplus)
+
+
+def compute_acc_theoretical_surplus(model):
+    """Compute accumulated theoretical surplus"""
+    if model.shifted:
+        init_producer_surplus = model.supply.theoretical_surplus
+        init_consumer_surplus = model.demand.theoretical_surplus
+        init_total_surplus = ((init_producer_surplus + init_consumer_surplus) *
+                              (model.shifted_period - 1))
+
+        shift_prod_surplus = model.new_supply.theoretical_surplus
+        shift_cons_surplus = model.new_demand.theoretical_surplus
+        shift_total_surplus = ((shift_prod_surplus + shift_cons_surplus) *
+                               (model.num_period - model.shifted_period + 1))
+        total_surplus = init_total_surplus + shift_total_surplus
+    else:
+        producer_surplus = model.supply.theoretical_surplus
+        consumer_surplus = model.demand.theoretical_surplus
+        total_surplus = ((producer_surplus + consumer_surplus) *
+                         model.num_period)
+    return total_surplus
+
+
 def compute_efficiency(model):
     # Compute the efficiency of traders' surplus
     # in contrast to the theoretical maximum surplus.
-    producer_surplus = model.supply.theoretical_surplus
-    consumer_surplus = model.demand.theoretical_surplus
-    total_surplus = (producer_surplus + consumer_surplus) * model.num_period
+    total_surplus = compute_acc_theoretical_surplus(model)
     actual_surplus = compute_actual_surplus(model)
     return actual_surplus / total_surplus
 
@@ -252,32 +280,58 @@ class CDAmodel(Model):
         # so we need variables to indicate them.
         self.no_trade = False
 
+        # When a shift happens, I need to know it so that
+        # I can calculate efficiency properly.
+        self.shifted = False
+        self.shifted_period = -1
+        self.new_supply = None
+        self.new_demand = None
+
         # How agents are activated at each step
         self.schedule = RandomChoiceActivation(self)
         # Create agents
-        for i, value in enumerate(demand.price_schedule):
+        for i, cost in enumerate(self.supply.price_schedule):
             self.schedule.add(
-                s_strategy(i, self, "buyer", value, demand.q_per_agent,
+                b_strategy(i, self, "seller", cost, supply.q_per_agent,
                            highest_ask, lowest_ask)
             )
-
-        for i, cost in enumerate(supply.price_schedule):
-            j = self.num_buyers + i
+        for i, value in enumerate(self.demand.price_schedule):
+            j = self.num_sellers + i
             self.schedule.add(
-                b_strategy(j, self, "seller", cost, supply.q_per_agent,
+                s_strategy(j, self, "buyer", value, demand.q_per_agent,
                            highest_ask, lowest_ask)
             )
 
         # Collecting data
+        # self.datacollector = DataCollector(
+        #     model_reporters={"Period": "num_period",
+        #                      "OB": "outstanding_bid",
+        #                      "OBer": get_bidder_id,
+        #                      "OA": "outstanding_ask",
+        #                      "OAer": get_asker_id,
+        #                      "MarketPrice": "market_price",
+        #                      "Traded": "traded",
+        #                      "Order": lambda x: x.history.get_last_action(),
+        #                      "Efficiency": compute_efficiency},
+        #     agent_reporters={"Period": lambda x: x.model.num_period,
+        #                      "Type": lambda x: type(x),
+        #                      "Role": "role",
+        #                      "Value": "value",
+        #                      "Good": "good",
+        #                      "Right": "right",
+        #                      "Surplus": "surplus"}
+        # )
         self.datacollector = DataCollector(
-            model_reporters={"Period": "num_period",
+            model_reporters={"Step": "num_step",
+                             "Period": "num_period",
+                             "TransNum": "num_traded",
                              "OB": "outstanding_bid",
-                             "OBer": get_bidder_id,
                              "OA": "outstanding_ask",
-                             "OAer": get_asker_id,
                              "MarketPrice": "market_price",
                              "Traded": "traded",
-                             "Order": lambda x: x.history.get_last_action(),
+                             "CumulativeActualSurplus": compute_actual_surplus,
+                             "TheoreticalSurplus": compute_theoretical_surplus,
+                             "CumulativeTS": compute_acc_theoretical_surplus,
                              "Efficiency": compute_efficiency},
             agent_reporters={"Period": lambda x: x.model.num_period,
                              "Type": lambda x: type(x),
@@ -287,28 +341,6 @@ class CDAmodel(Model):
                              "Right": "right",
                              "Surplus": "surplus"}
         )
-        # self.datacollector = DataCollector(
-        #     model_reporters={"Step": "num_step",
-        #                      "Period": "num_period",
-        #                      "TransNum": "num_traded",
-        #                      "OB": "outstanding_bid",
-        #                      "OA": "outstanding_ask",
-        #                      "MarketPrice": "market_price",
-        #                      "Traded": "traded",
-        #                      "ActualSurplus": compute_actual_surplus,
-        #                      "TheoreticalSurplus": lambda x: (
-        #                          x.supply.theoretical_surplus +
-        #                          x.demand.theoretical_surplus),
-        #                      "Efficiency": compute_efficiency},
-        #     agent_reporters={"Period": lambda x: x.model.num_period,
-        #                      "Type": lambda x: type(x),
-        #                      "Role": "role",
-        #                      "Value": "value",
-        #                      "Good": "good",
-        #                      "Right": "right",
-        #                      "Surplus": "surplus"}
-
-        # )
 
     def initialize_spread(self):
         # Initialize outstanding bid and ask
@@ -362,20 +394,36 @@ class CDAmodel(Model):
         self.traded = 1
         self.num_traded += 1
 
-    def next_period(self):
-        # Make sure the schedule is in the same order as it was initialized.
+    def next_period(self, new_supply=None, new_demand=None):
 
         if self.num_traded == 0:
             self.no_trade = True
 
+        if new_supply and new_demand:
+            self.new_supply = new_supply
+            self.new_demand = new_demand
+            self.shifted = True
+            self.shifted_period = self.num_period + 1
+
+        if self.shifted:
+            supply = self.new_supply
+            demand = self.new_demand
+        else:
+            supply = self.supply
+            demand = self.demand
+
+        # Making sure the schedule is ordered as it was initialized.
         self.schedule.agents.sort(key=lambda x: x.unique_id)
-        for i, _ in enumerate(self.demand.price_schedule):
-            self.schedule.agents[i].right = self.demand.q_per_agent
+
+        for i, cost in enumerate(supply.price_schedule):
+            self.schedule.agents[i].good = supply.q_per_agent
+            self.schedule.agents[i].value = cost
             self.schedule.agents[i].active = True
 
-        for i, _ in enumerate(self.demand.price_schedule):
-            j = self.num_buyers + i
-            self.schedule.agents[j].good = self.supply.q_per_agent
+        for i, value in enumerate(demand.price_schedule):
+            j = self.num_sellers + i
+            self.schedule.agents[j].right = demand.q_per_agent
+            self.schedule.agents[j].value = value
             self.schedule.agents[j].active = True
 
         self.num_period += 1
@@ -436,7 +484,6 @@ class CDAmodel(Model):
 # while num_batches <= 9:
 #     print()
 #     print(num_batches)
-#     print()
 #     model = CDAmodel(supply, demand, ZIP, ZIP, 100, 0)
 #     for j in range(10):
 #         print("Period", model.num_period)
@@ -458,3 +505,76 @@ class CDAmodel(Model):
 
 def get_agent(unique_id):
     return [i for i in model.schedule.agents if i.unique_id == unique_id][0]
+
+
+# supply and demand shock test
+supply = Supply(6, 5, 1, 15.00, 25.00, 1)
+demand = Demand(6, 5, 1, 35.00, 25.00, 1)
+
+def supply_shift(supply, demand, delta_q):
+    """Shift a given supply by delta_q * change in price per quantity.
+    demand object is needed for adjustment of market price and surplus."""
+    # works only for the case of 1 quantity per agent.
+    delta_price = ((supply.equilibrium_price - supply.minimum_price)
+                   / (supply.num_in - 1)) * 2 * delta_q
+    delta_eqb_price = ((supply.equilibrium_price - supply.minimum_price)
+                       / (supply.num_in - 1)) * delta_q
+    shifted_supply = Supply(supply.num_in + delta_q,
+                            supply.num_ex - delta_q, 1,
+                            supply.minimum_price - delta_price,
+                            supply.equilibrium_price - delta_eqb_price, 1)
+    adjusted_demand = Demand(demand.num_in + delta_q,
+                             demand.num_ex - delta_q, 1,
+                             demand.maximum_price,
+                             demand.equilibrium_price - delta_eqb_price, 1)
+    return shifted_supply, adjusted_demand
+
+
+def demand_shift(supply, demand, delta_q):
+    """Shift a given supply by delta_q * change in price per quantity.
+    demand object is needed for adjustment of market price and surplus."""
+    # works only for the case of 1 quantity per agent.
+    delta_price = ((demand.maximum_price - demand.equilibrium_price)
+                   / (demand.num_in - 1)) * 2 * delta_q
+    delta_eqb_price = ((demand.maximum_price - demand.equilibrium_price)
+                       / (demand.num_in - 1)) * delta_q
+    shifted_demand = Demand(demand.num_in + delta_q,
+                            demand.num_ex - delta_q, 1,
+                            demand.maximum_price + delta_price,
+                            demand.equilibrium_price + delta_eqb_price, 1)
+    adjusted_supply = Supply(supply.num_in + delta_q,
+                             supply.num_ex - delta_q, 1,
+                             supply.minimum_price,
+                             supply.equilibrium_price + delta_eqb_price, 1)
+    return adjusted_supply, shifted_demand
+
+supply2, demand2 = supply_shift(supply, demand, 2)
+
+
+model = CDAmodel(supply, demand, ZIP, ZIP, 100, 0)
+for j in range(4):
+    print("Period", model.num_period)
+    for i in range(500):
+        model.step()
+    model.next_period()
+
+print("Period", model.num_period)
+for i in range(500):
+    model.step()
+model.next_period(new_supply=supply2, new_demand=demand2)
+for i in range(500):
+    model.step()
+model.next_period()
+
+for j in range(4):
+    print("Period", model.num_period)
+    for i in range(500):
+        model.step()
+    model.next_period()
+    if model.no_trade:
+        print("No Trade")
+        break
+
+data_model = model.datacollector.get_model_vars_dataframe()
+data_t_model = data_model[data_model.Traded == 1].drop(
+                columns='Traded')
