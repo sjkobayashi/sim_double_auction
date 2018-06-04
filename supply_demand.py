@@ -6,6 +6,7 @@ class Supply:
     """A class representing a supply curve."""
     def __init__(self, num_in, num_ex, q, p_min, p_eqb, num_per_step):
         self._init_common(num_in, num_ex, q, p_min, p_eqb, num_per_step)
+        self.minimum_price = p_min
 
         steps_in = num_in // num_per_step
         prices_in = np.linspace(p_min, p_eqb, steps_in)
@@ -26,6 +27,8 @@ class Supply:
             raise ValueError("Number of extramarginal agents \
             must be divisible by number of agents per step")
 
+        self.num_in = num_in
+        self.num_ex = num_ex
         self.num_agents = num_in + num_ex  # number of agents
         self.q_per_agent = q  # number of units held by each agent
         self.equilibrium_price = p_eqb
@@ -48,11 +51,23 @@ class Supply:
                  np.append(self.price_schedule[0], self.price_schedule))
         plt.show()
 
-    def market_graph(self, other):
+    def market_graph(self, other, ylim=None):
         plt.step(np.append(0, self.cumulative_quantity),
-                 np.append(self.price_schedule[0], self.price_schedule))
+                 np.append(self.price_schedule[0], self.price_schedule),
+                 label="Supply", color="blue")
         plt.step(np.append(0, other.cumulative_quantity),
-                 np.append(other.price_schedule[0], other.price_schedule))
+                 np.append(other.price_schedule[0], other.price_schedule),
+                 label="Demand", color="red")
+        axes = plt.gca()
+        plt.vlines(self.num_in, 0, self.equilibrium_price,
+                   linestyle="dashed")
+        plt.hlines(self.equilibrium_price, 0, self.num_in,
+                   linestyle="dashed")
+        axes.set_xlabel("Quantity")
+        axes.set_ylabel("Price")
+        if ylim:
+            axes.set_ylim(ylim)
+        plt.legend(loc='lower left')
         plt.show()
 
     def comp_theoretical_surplus(self):
@@ -66,6 +81,7 @@ class Demand(Supply):
     """A class representing a demand curve."""
     def __init__(self, num_in, num_ex, q, p_max, p_eqb, num_per_step):
         self._init_common(num_in, num_ex, q, p_max, p_eqb, num_per_step)
+        self.maximum_price = p_max
 
         steps_in = num_in // num_per_step
         prices_in = np.linspace(p_max, p_eqb, steps_in)
@@ -83,4 +99,3 @@ class Demand(Supply):
         surplus = self.price_schedule_in - self.equilibrium_price
         iterable = (p * self.q_per_agent for p in surplus)
         self.theoretical_surplus = sum(np.fromiter(iterable, float))
-

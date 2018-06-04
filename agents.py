@@ -463,7 +463,7 @@ class GD(Trader):
 
         if self.model.num_traded == 0:
             # If no trade has occurred, be a smarter ZI.
-            a = max(0, self.model.outstanding_bid)
+            a = self.model.outstanding_bid
             b = self.value
         else:
             prices = self.model.history.get_prices(length=self.mem_length)
@@ -511,13 +511,13 @@ class MGD(GD):
 
         try:
             if ask >= self.model.history.max_last_period:
-                return self.eta
+                return 0 #
         except TypeError:
             pass
 
         try:
             if ask >= self.model.history.max_current_period:
-                return self.eta
+                return 0 #
         except TypeError:
             pass
 
@@ -548,13 +548,13 @@ class MGD(GD):
 
         try:
             if bid <= self.model.history.min_last_period:
-                return self.eta
+                return 0 #
         except TypeError:
             pass
 
         try:
             if bid <= self.model.history.min_current_period:
-                return self.eta
+                return 0 #
         except TypeError:
             pass
 
